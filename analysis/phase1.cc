@@ -84,7 +84,16 @@ void AddToyModelParticles(int nGen, TRandom3 * rand, std::vector<fastjet::Pseudo
 	float pz = 0;
 	float energy = 0;
 
-	for (int i = 0; i < nGen; i++) {
+
+
+  // to do
+  // add randomized v3 angle
+  // Can pick v3 angle within 1 third of circle (or anywhere)
+  //double psi_3 = rand->Rndm() * 2.*TMath::Pi()/3.;
+  double psi_3 = rand->Rndm() * 2.*TMath::Pi();
+
+
+	for (int i = 0; i < nGen * ToyEtaRange; i++) {
 		eta = (2.*rand->Rndm()-1)*ToyEtaRange;
 		// this expression works for exponential distribution
 		pt = ptMinToy + rand->Exp(tau); // sample from exp(-t/tau);
@@ -96,7 +105,9 @@ void AddToyModelParticles(int nGen, TRandom3 * rand, std::vector<fastjet::Pseudo
 			phi = rand->Rndm()*2*PI;
 		} else {
 
+
 			double v2 = 0;
+      double v3 = 0;
 			double v4 = 0;
 	
 			// VN Fit Parameters
@@ -139,10 +150,15 @@ void AddToyModelParticles(int nGen, TRandom3 * rand, std::vector<fastjet::Pseudo
           V4FP_2 = 1.23961e+00;//   8.31609e-02
 			}
 			v2 = V2FP_0 * TMath::Landau(pt,V2FP_1,V2FP_2,false);
+			v4 = V4FP_0 * TMath::Landau(pt,V4FP_1,V4FP_2,false);
+
+      // v3 approximation
+      //
+      v3 = v2*v2;
 
 			for (int z = 0; z < 30; z++) {
 				phi = rand->Rndm()*2*PI;
-				double pdf = 1. + 2.*v2*TMath::Cos(2.*phi) + 2.*v4*TMath::Cos(4.*phi);
+				double pdf = 1. + 2.*v2*TMath::Cos(2.*phi) + 2. * TMath::Cos(3.*(phi - psi_3)) + 2.*v4*TMath::Cos(4.*phi);
 				double testValue = 2.*rand->Rndm();
 				if (testValue <= pdf) break;
 				// After 30 tries, the phi will just be random
@@ -151,7 +167,13 @@ void AddToyModelParticles(int nGen, TRandom3 * rand, std::vector<fastjet::Pseudo
 
 		fastjet::PseudoJet newParticle(pt*cos(phi),pt*sin(phi),pz,energy);
 
+    // todo: randomly assign some toy particles to be pi0s
+    // todo: apply a status for toy particles kToyParticleStatus
 		newParticle.set_user_index(kToyParticleLabel); // label for Toy model particles
+
+    float fPi0Fraction = 0.2; // total guess for pi0s proportion at highest pt
+    if (rand->Rndm() < fPi0Fraction) newParticle.set_user_index(111);
+
 
 		//printf("DEBUG: Toy adding particle with (px=%f,py=%f,pz=%f,E=%f)\n",newParticle.px(),newParticle.py(),newParticle.pz(),newParticle.e());
 		particles.push_back(newParticle);
@@ -1115,6 +1137,19 @@ void phase1(TString inputFilename, TString outputFilename, double jet_constituen
   // Event loop
   for (Int_t eventNumber = 0; eventNumber < nevents; eventNumber++)
   {
+    if (iOddEven > 0) { // Skip Some events
+      if ((iOddEven == 1) && (eventNumber % 2 == 1)) continue;
+      if ((iOddEven == 2) && (eventNumber % 2 == 0)) continue;
+      if (iOddEven > 2) {
+        int nMod4 = eventNumber % 4;
+        if ((nMod4 == 1) && (iOddEven == 3)) continue;
+        if ((nMod4 == 2) && (iOddEven == 4)) continue;
+        if ((nMod4 == 3) && (iOddEven == 5)) continue;
+        if ((nMod4 == 0) && (iOddEven == 6)) continue;
+      }
+    }
+
+
     tree->GetEntry(eventNumber);
   
     TString hashString = "";
@@ -2338,6 +2373,25 @@ void parseInput(int argc, char * argv[], TString & inputFilename, TString & outp
       bUseZtBins = true;
       continue;
     }
+
+
+    if ((argv[i] == std::string("--sign")) || (argv[i] == std::string("-s")) )
+    {
+      // Check for input value
+      if (argc > i+1)
+      {
+        iOddEven = std::stoi(argv[i+1]);
+        i++;
+        continue;
+      }
+      else
+      {
+        std::cout << "An value for the sign (or modulus) of events to use!" << std::endl;
+        printHelp();
+      }
+    }
+
+
     if ((argv[i] == std::string("--numToyParticles")) || (argv[i] == std::string("-n")) )
     {
       // Check for input value
@@ -2510,6 +2564,10 @@ void printHelp(std::string input)
     << "\t\t\t-> Applies a phi acceptance simulation. Default: false." << std::endl 
     << std::setw(5) << std::left << "\t-b" << "\t--doJetBkgSub"
     << "\t\t\t-> Uses an out of cone background subtraction for jet pT for jetPt bins. Default: false." << std::endl
+    
+    << std::setw(5) << std::left << "\t-s" << "\t--sign"
+    << "\t\t\t\t\t-> Sets the usage of only even or odd numbered events"<<std::endl<<std::endl
+
     << std::setw(5) << std::left << "\t-n" << "\t--numToyParticles"
     << "\t\t\t-> Sets the number of particles to produce from a toy model. Set to 0 to disable toy model. Default: 100." << std::endl << std::endl
     << std::setw(5) << std::left << "\t-v" << "\t--flow [version]"

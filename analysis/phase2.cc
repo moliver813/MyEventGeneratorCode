@@ -85,6 +85,15 @@ void set_plot_style() {
   gStyle->SetNumberContours(NCont);
 }
 
+// Copied from phase2 of GammaHadron
+	static const Int_t kDEtaFitColor=15;  ///< Color for the total fit
+  static const Int_t kDEtaFitThinColor=kPink-9; ///< Color for the thin peak
+  static const Int_t kDEtaFitWideColor=15; ///< Color for the wide peak
+
+  static const Int_t kDEtaFitStyle=1;  ///< Style for the total fit
+  static const Int_t kDEtaFitThinStyle=2; ///< Style for the thin peak
+  static const Int_t kDEtaFitWideStyle=1; ///< Style for the wide peak
+
 
 
 void normalizeTH1F(TH1F * hist) {
@@ -237,6 +246,181 @@ void calculateVnAndError(TH1F * phiProj, double &v2, double &v2Error, double &v4
 	v6 = fit->GetParameter(3);
 	v6Error = fit->GetParError(3);
 }
+
+
+// Next two functions are copied from phase2:PlotGhCorrelations
+Double_t PolyTwoGaussFitFunc(Double_t * x_val, Double_t* par) {
+
+  Double_t x, y, par0, par1, par2, par3, par4, par5, par6, par7, par8, par9, par10,CommomMean;
+  par0  = par[0]; //amplitude gauss 1
+  par1  = par[1]; //mean gauss 1
+  par2  = par[2]; //width gauss 1
+  //the second gaus is smaller in amplitude and larger in width
+  par3  = par[3]*par[0]; //amplitude gauss 2 (parameter3 ranges from 0-1)
+  par4  = par[4]; //mean gauss 2
+  par5  = par[5]*par[2]; //width gauss 2 (parameter5 is larger than 1)
+  par6  = par[6]; //a
+  par7  = par[7]; //b x^1
+  par8  = par[8]; //c x^2
+  par9  = par[9]; //d x^3
+  par10 = par[10];//e x^4
+  x = x_val[0];
+
+  //Do that so that the mean of the two gaussians are the same
+  CommomMean=(par1+par4)*0.5;
+
+  //   cout<<"current p0: "<<par0<<", current p3: "<<par3<<endl;
+
+  y = par0*(TMath::Gaus(x,CommomMean,par2,0))+par3*(TMath::Gaus(x,CommomMean,par5,0));
+  y+=par6; // constant background
+  //y+=(par6+par7*x+par8*x*x+par9*x*x*x+par10*x*x*x*x); // poly background
+  return y;
+}
+
+void FitGaussAndDraw(TH1D* corrProjHistoSE, TF1* Func1, TF1* Func2, TF1* Func3) {
+
+  // Idea: set Widthmin = bin width
+
+  double fWidthMin=0.01;
+
+  double fWidthBinScale = 0.25;
+  fWidthMin = fWidthBinScale * corrProjHistoSE->GetBinWidth(corrProjHistoSE->FindBin(0.0));
+
+  double fWidthMax=0.5;
+  printf("Debug FitGausAndDraw Setting width min,max to %f,%f\n",fWidthMin,fWidthMax);
+
+  for(Int_t g = 0; g < 11; g++)
+  {
+    Func1->ReleaseParameter(g);
+    Func1->SetParameter(g,0);
+    Func1->SetParError(g,0.0);
+  }
+  Func1->SetParameter(1,0); //..start value for mean1
+  Func1->SetParameter(4,0); //..start value for mean2
+
+  // Naming
+  Func1->SetParName(0,"amp_1");
+  Func1->SetParName(1,"mu_1");
+  Func1->SetParName(2,"sigma_1");
+  Func1->SetParName(3,"amp_1");
+  Func1->SetParName(4,"mu_1");
+  Func1->SetParName(5,"sigma_2/sigma_1");
+  Func1->SetParName(6,"a");
+
+	Bool_t bFixDEtaPeak=1;
+
+	//- - - - - - - - - - - - - - - -
+	//..Flat background
+	//..for eta -> estimate the background level on eta=-0.7&+0.7
+	Double_t backgroundLevel=corrProjHistoSE->Integral(corrProjHistoSE->FindBin(-0.7),corrProjHistoSE->FindBin(-0.5));
+	backgroundLevel+=corrProjHistoSE->Integral(corrProjHistoSE->FindBin(0.5),corrProjHistoSE->FindBin(0.7));
+	//..Divide by number of bins
+	Double_t bins=corrProjHistoSE->FindBin(-0.5)-corrProjHistoSE->FindBin(-0.7);
+	bins+=corrProjHistoSE->FindBin(0.7)-corrProjHistoSE->FindBin(0.5);
+	backgroundLevel*=1/bins;
+	//cout<<"Integral: "<<backgroundLevel*bins<<", n bins= "<<bins<<", average bgk: "<<backgroundLevel<<endl;
+	Func1->SetParameter(6,backgroundLevel);
+	Func1->SetParLimits(6,backgroundLevel*0.9,backgroundLevel*1.1);  //..allow a variation of +-10%
+
+	//- - - - - - - - - - - - - - - -
+	//..big, narrow gaussian
+	//..etimate amplitude by 0 heigth and background level
+	//Double_t amplEst=corrProjHistoSE->GetBinContent(corrProjHistoSE->FindBin(0));
+	Double_t amplEst=TMath::Abs(corrProjHistoSE->GetBinContent(corrProjHistoSE->FindBin(0)));
+	amplEst+=TMath::Abs(corrProjHistoSE->GetBinContent(corrProjHistoSE->FindBin(0)-1));
+	amplEst+=TMath::Abs(corrProjHistoSE->GetBinContent(corrProjHistoSE->FindBin(0)+1));
+	// FIXME at lowest statistics, amplEst can be negative!
+//  amplEst-=3*backgroundLevel;
+	amplEst = amplEst / 3.0;
+	double widthEst = 0.45;
+
+	printf("Debug eta width fit: using amp est %f\n",amplEst);
+	//amplEst-=backgroundLevel;
+	Func1->SetParameter(0,amplEst);    //..amplitude
+	Func1->SetParameter(2,widthEst);       //..width
+	Func1->SetParLimits(0,amplEst*0.9,amplEst*1.1);
+	if (bFixDEtaPeak) {
+		Func1->FixParameter(1,0.0);
+	} else {
+		Func1->SetParLimits(1,-0.1,0.1);  //..mean limits
+	}
+	Func1->SetParLimits(2,fWidthMin,fWidthMax);  //..width limits
+
+
+	//- - - - - - - - - - - - - - - -
+	//..small, wide gaussian
+	Func1->SetParameter(3,0.05);       //..amplitude (ratio to amplitude of main peak)
+	Func1->SetParameter(5,1.1);        //..width
+	Func1->SetParLimits(3,0.05,0.5);   //..amplitude limits 5-50% of the main peak (ampl2 = param0*param3)
+	if (bFixDEtaPeak) {
+		Func1->FixParameter(4,0.0);   //..fixing mean parameter at 0
+	} else {
+		Func1->SetParLimits(4,-0.1,0.1);   //..mean limits
+	}
+	Func1->SetParLimits(5,1.05,3.0);   //..width limits 105%-300% of the big one (width2 = param2*param5)
+
+	// Fixing the background to zero for the eta case
+	Func1->FixParameter(6,0);
+
+	//- - - - - - - - - - - - - - - -
+	//..plot range for eta projection
+	Func1->SetRange(-1.0,1.0);
+	Func2->SetRange(-1.0,1.0);
+	Func3->SetRange(-1.0,1.0);
+
+  //.. CAREFUL YOU CAN ALSO SET THE SECOND GAUSS TO 0.
+  //
+  //Func1->FixParameter(3,0); //..Use only 1 gaussian for fitting
+
+  Func1->SetLineColor(kDEtaFitColor);
+  Func1->SetLineStyle(kDEtaFitStyle); //2
+
+
+  TString Name= Func1->GetName();
+  corrProjHistoSE->Fit(Name,"","",-0.7,0.7); //Eta case Q = quiet mode, no printout
+  //..width that is used to define an eta range not contaminated by the near side peak
+  //..you can define the width in multiple ways.
+  //..THINK ABOUT THAT!
+  //Width   =Func1->GetParameter(5)*Func1->GetParameter(2);//bigger width in delta phi
+  Double_t Width   =Func1->GetParameter(2); //bigger width in delta phi
+  Double_t ErrWidth=Func1->GetParError(2);
+
+  //  fEtaWidth->SetBinContent(bin,Width);
+  //  fEtaWidth->SetBinError(bin,ErrWidth);
+
+
+  //  cout<<"Width gauss2: "<<Func1->GetParameter(5)<<" times of width 1"<<endl;
+
+  for(Int_t g = 0; g < 11; g++)
+  {
+    Func2->SetParameter(g,Func1->GetParameter(g));
+    Func3->SetParameter(g,Func1->GetParameter(g));
+  }
+  //..small, wide gaussian
+  //..due to the fact that param 0 and param 3 are proportional
+  //..we do a little hack here. Setting param0 to 0 is necessary
+  //..to see only the small wide gaussian. If we set param0 to 0
+  //..however, param3 will become 0 by defualt. We can however
+  //..set param0 to a negligibly small value x and multiply param3
+  //..by the inverse of x. (normally param3 is in the range 0-1, but we omit this for this specific case)
+  Double_t Shrinkage=0.00001;
+  //Func2
+  Func2->SetParameter(0,Shrinkage);
+  Func2->SetParameter(3,1.0*Func1->GetParameter(3)*Func1->GetParameter(0)/Shrinkage);
+  Func2->SetLineColor(kDEtaFitWideColor); //kPink-9);
+  Func2->SetLineStyle(kDEtaFitWideStyle);
+
+//  if(Func1->GetParameter(3)!=0)Func2 ->DrawCopy("same"); //..only when the small-broad gaussian is not set to 0
+
+  //..big, narrow gaussian (green)
+  Func3->SetParameter(3,0);
+  //Func3->SetLineColor(kCyan-2);
+  Func3->SetLineColor(kDEtaFitThinColor);
+  Func3->SetLineStyle(kDEtaFitThinStyle);
+  Func3 ->DrawCopy("same");
+
+}
+
 
 
 
@@ -1839,11 +2023,17 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
   TH1D * jetHdEtaProjection[nEPBins][nTriggerPtBins][nAssocParticleBins];
 
 	// Projections especially for export to GH code
+	// name is confusing as these are dphi projections
 	TH1D * jetHFullDEtaProjection[nEPBins][nTriggerPtBins][nAssocParticleBins];
   TH1D * jetHNearDEtaProjection[nEPBins][nTriggerPtBins][nAssocParticleBins];
   TH1D * jetHFarDEtaProjection[nEPBins][nTriggerPtBins][nAssocParticleBins];
 
+	// Add dEta Projections: Nearside and Awayside
+	TH1D * jetHNearSideDEtaProjection[nEPBins][nTriggerPtBins][nAssocParticleBins];
+  TH1D * jetHAwaySideDEtaProjection[nEPBins][nTriggerPtBins][nAssocParticleBins];
 
+	// DEta Nearside projection with sub
+	TH1D * jetHDEtaSubProjection[nEPBins][nTriggerPtBins][nAssocParticleBins];
 
 
 
@@ -1865,6 +2055,10 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
   TCanvas *cJetHBkgSub = new TCanvas("cJetBkgSub","cJetBkgSub",c_width,c_height);
   TCanvas *cJetHdEtaFit = new TCanvas("cJetHdEtaFit","cJetHdEtaFit",c_width,c_height);
   TCanvas *cJetHdEtadPhiFit = new TCanvas("cJetHdEtadPhiFit","cJetHdEtadPhiFit",c_width,c_height);
+
+	TCanvas *cJetHNearSideDEta = new TCanvas("cJetHNearSideDEta","cJetHNearSideDEta",c_width,c_height);
+	TCanvas *cJetHDEtaSub = new TCanvas("cJetHDEtaSub","cJetHDEtaSub",c_width,c_height);
+
 
   TString combinedNames;
 
@@ -1904,6 +2098,8 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 	vector <vector<TGraph *> >			  ptBinChiSqOverNDFGraphsEP;
 
 
+	vector <vector<TGraphErrors *> > ptBinNSEtaCentralWidthsGraphsEP;
+
 	vector <vector<TGraphErrors *> > ptBinNSRmsGraphsEP;
 	vector <vector<TGraphErrors *> > ptBinNSIntegralsGraphsEP;
 
@@ -1933,6 +2129,10 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 		vector < vector <double> > ptBinASMeansErr;
 		vector < vector <double> > ptBinASBetas;
 		vector < vector <double> > ptBinASBetasErr;
+
+
+		vector < vector <double> > ptBinNSEtaCentralWidths;
+		vector < vector <double> > ptBinNSEtaCentralWidthsErr;
 
 		vector < vector <double> > ptBinNSRms;
 		vector < vector <double> > ptBinNSRmsErr;
@@ -1973,6 +2173,9 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			vector <double> ChiSqRow;
 			vector <double> ChiSqOverNDFRow;
 
+			vector <double> NSEtaCentralWidthsRow;
+			vector <double> NSEtaCentralWidthsErrRow;
+
 			vector <double> NSRmsRow;
 			vector <double> NSRmsErrRow;
 			vector <double> NSIntegralsRow;
@@ -2002,6 +2205,9 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				BsErrRow.push_back(0.0);
 				ChiSqRow.push_back(0.0);
 				ChiSqOverNDFRow.push_back(0.0);
+
+				NSEtaCentralWidthsRow.push_back(0.0);
+				NSEtaCentralWidthsErrRow.push_back(0.0);
 
 				NSIntegralsRow.push_back(0.0);
 				NSIntegralsErrRow.push_back(0.0);
@@ -2034,6 +2240,9 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			ptBinChiSq.push_back(ChiSqRow);
 			ptBinChiSqOverNDF.push_back(ChiSqOverNDFRow);
 
+			ptBinNSEtaCentralWidths.push_back(NSEtaCentralWidthsRow);
+			ptBinNSEtaCentralWidthsErr.push_back(NSEtaCentralWidthsErrRow);
+
 			ptBinNSRms.push_back(NSRmsRow);
 			ptBinNSRmsErr.push_back(NSRmsErrRow);
 			ptBinNSIntegrals.push_back(NSIntegralsRow);
@@ -2065,6 +2274,8 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 		TString sJetHBkgSub = "";	
 		TString sJetHdEtaFit = "";
 		TString sJetHdEtadPhiFit = "";
+		TString sJetHNearSideDEtaFit = "";
+		TString sJetHDEtaSub = "";
 
 		cSwiftJet->Divide(TMath::CeilNint(TMath::Sqrt(nTriggerPtBins)),
 				TMath::FloorNint(TMath::Sqrt(nTriggerPtBins)));
@@ -2102,6 +2313,10 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			cJetHdEtaFit->Divide(n_x_SubDiv,n_y_SubDiv);
 			cJetHdEtadPhiFit->Clear();   
 			cJetHdEtadPhiFit->Divide(n_x_SubDiv,n_y_SubDiv);
+			cJetHNearSideDEta->Clear();
+			cJetHNearSideDEta->Divide(n_x_SubDiv,n_y_SubDiv);
+			cJetHDEtaSub->Clear();
+			cJetHDEtaSub->Divide(n_x_SubDiv,n_y_SubDiv);
 
 			combinedClass = Form("jetHProjection_" + jetClass + sEPLabel + ".pdf",
 					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));
@@ -2110,13 +2325,18 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			sSwiftParticle = Form("particleYield_" + jetClass + sEPLabel + ".pdf",
 					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));		
 			sSwiftBackground = Form("swiftBackground_" + jetClass + sEPLabel + ".pdf",
-					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));		
+					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));
 			sJetHBkgSub = Form("jetHBkgSub_" + jetClass + sEPLabel,
-					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));		
+					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));
 			sJetHdEtaFit = Form("jetHdEtaFit_" + jetClass + sEPLabel,
-					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));		
+					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));
 			sJetHdEtadPhiFit = Form("jetHdEtadPhiFit_" + jetClass + sEPLabel + ".pdf",
-					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));		
+					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));
+			sJetHNearSideDEtaFit = Form("jetHNearSideDEtaFit_" + jetClass + sEPLabel,
+					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));
+			sJetHDEtaSub = Form("jetHNearSideDEtaSubFit_" + jetClass + sEPLabel,
+					fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));
+
 
 	/*		combinedClass = Form("jetHProjection_" + jetClass + ".pdf",
 					jetPtBins.at(i),jetPtBins.at(i+1));
@@ -2253,24 +2473,99 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				
 
 
-	//			double dPhi_Bkg_min = -PI/2;
-//				double dPhi_Bkg_max = PI/2;
-				double dPhi_Bkg_min = -PI/3;
-				double dPhi_Bkg_max = PI/3;
+				double dPhi_Bkg_min = -PI/2;
+				double dPhi_Bkg_max = PI/2;
+				//double dPhi_Bkg_min = -PI/3;
+				//double dPhi_Bkg_max = PI/3;
 				int dPhi_Bkg_min_bin = jetHadronEP[k][i][j]->GetYaxis()->FindFixBin(dPhi_Bkg_min);
 				int dPhi_Bkg_max_bin = jetHadronEP[k][i][j]->GetYaxis()->FindFixBin(dPhi_Bkg_max);      
+
 				combinedNames = jetHadronEP[k][i][j]->GetName();
 				combinedNames += "_dEtaProjection";
 				jetHdEtaProjection[k][i][j] = jetHadronEP[k][i][j]->ProjectionX(combinedNames.Data(),dPhi_Bkg_min_bin,dPhi_Bkg_max_bin,"e");
 				jetHdEtaProjection[k][i][j]->GetXaxis()->SetTitle("#Delta#eta");
-				jetHdEtaProjection[k][i][j]->GetYaxis()->SetTitle("1/N_{jet} dN/d#Delta#eta");
+				jetHdEtaProjection[k][i][j]->GetYaxis()->SetTitle(Form("1/N_{%s} dN/d#Delta#eta",sTriggerName.Data()));
 				jetHdEtaProjection[k][i][j]->SetTitle(combinedNames.Data());
+
 				// averaging over number of bins in phi.
-				jetHdEtaProjection[k][i][j]->Scale(1./(1+dPhi_Bkg_max_bin - dPhi_Bkg_min_bin));
-
+	//			jetHdEtaProjection[k][i][j]->Scale(1./(1+dPhi_Bkg_max_bin - dPhi_Bkg_min_bin));
         
+			// Make the new delta eta projections. Or are these already made?
+				// May also want to mimic the NS - (scale) AS subtraction. It shouldn't make much of a difference.
+			//jetHNearSideDEtaProjection
+			//jetHAwaySideDEtaProjection
 
-        
+				combinedNames = jetHadronEP[k][i][j]->GetName();
+				combinedNames += "_NSdEtaProjection";
+				jetHNearSideDEtaProjection[k][i][j] = jetHadronEP[k][i][j]->ProjectionX(combinedNames.Data(),dPhi_Bkg_min_bin,dPhi_Bkg_max_bin,"e");
+
+				jetHNearSideDEtaProjection[k][i][j]->GetXaxis()->SetTitle("#Delta#eta");
+				jetHNearSideDEtaProjection[k][i][j]->GetYaxis()->SetTitle(Form("1/N_{%s} dN/d#Delta#eta",sTriggerName.Data()));
+				jetHNearSideDEtaProjection[k][i][j]->SetTitle(combinedNames.Data());
+
+				combinedNames = jetHadronEP[k][i][j]->GetName();
+				combinedNames += "_ASdEtaProjection";
+
+
+
+
+				double dPhi_Bkg_min_Away = PI/2;
+				double dPhi_Bkg_max_Away = 3*PI/2;
+				//double dPhi_Bkg_min = -PI/3;
+				//double dPhi_Bkg_max = PI/3;
+				int dPhi_Bkg_min_bin_Away = jetHadronEP[k][i][j]->GetYaxis()->FindFixBin(dPhi_Bkg_min_Away);
+				int dPhi_Bkg_max_bin_Away = jetHadronEP[k][i][j]->GetYaxis()->FindFixBin(dPhi_Bkg_max_Away);
+				combinedNames = jetHadronEP[k][i][j]->GetName();
+				combinedNames += "_ASdEtaProjection";
+				jetHAwaySideDEtaProjection[k][i][j] = jetHadronEP[k][i][j]->ProjectionX(combinedNames.Data(),dPhi_Bkg_min_bin_Away,dPhi_Bkg_max_bin_Away,"e");
+				jetHAwaySideDEtaProjection[k][i][j]->GetXaxis()->SetTitle("#Delta#eta");
+				jetHAwaySideDEtaProjection[k][i][j]->GetYaxis()->SetTitle(Form("1/N_{%s} dN/d#Delta#eta",sTriggerName.Data()));
+				jetHAwaySideDEtaProjection[k][i][j]->SetTitle(combinedNames.Data());
+
+
+				// Make scale awayside and subtract from clone
+				// clone nearside for subtraction
+				jetHDEtaSubProjection[k][i][j] = (TH1D*) jetHNearSideDEtaProjection[k][i][j]->Clone(Form("%sSub",jetHNearSideDEtaProjection[k][i][j]->GetName()));
+
+				TH1D * projNearSide = jetHDEtaSubProjection[k][i][j];
+				TH1D * projAwaySide = jetHAwaySideDEtaProjection[k][i][j];
+
+				// Normalizing awayside to nearside
+				// default to range in data.
+				double normRangeEtaFar = 1.2;
+				double normRangeEtaNear = 0.6;
+
+				// extended range
+				normRangeEtaFar = 3.0;
+				normRangeEtaNear = 1.0;
+
+
+				double intA = projNearSide->Integral(projNearSide->FindBin(-normRangeEtaFar),projNearSide->FindBin(-normRangeEtaNear));
+				double intB = projAwaySide->Integral(projAwaySide->FindBin(-normRangeEtaFar),projAwaySide->FindBin(-normRangeEtaNear));
+
+				intA += projNearSide->Integral(projNearSide->FindBin(normRangeEtaNear),projNearSide->FindBin(normRangeEtaFar));
+				intB += projAwaySide->Integral(projAwaySide->FindBin(normRangeEtaNear),projAwaySide->FindBin(normRangeEtaFar));
+
+				projAwaySide->Scale(intA/intB);
+				projAwaySide->SetTitle(Form("%s (Scaled)",projAwaySide->GetTitle()));
+				projAwaySide->SetLineColor(kCyan-2);
+				projAwaySide->SetMarkerColor(kCyan-2);
+				projAwaySide->SetMarkerStyle(kFullSquare);
+
+				projNearSide->Add(projAwaySide,-1);
+
+				TF1 * GaussFunc  = new TF1("GaussFunc" ,&PolyTwoGaussFitFunc,-1.5,1.5,11);
+				TF1 * GaussFunc1 = new TF1("GaussFunc1",&PolyTwoGaussFitFunc,-1.5,1.5,11);
+				TF1 * GaussFunc2 = new TF1("GaussFunc2",&PolyTwoGaussFitFunc,-1.5,1.5,11);
+
+				FitGaussAndDraw(projNearSide,GaussFunc,GaussFunc1,GaussFunc2);
+
+				// Get some info from GaussFunc
+				// Central Width
+				// store in 2d array of tgrapherrors [k][i]
+
+				ptBinNSEtaCentralWidths[i][j] = GaussFunc->GetParameter(2); // sigma_1
+				ptBinNSEtaCentralWidthsErr[i][j] = GaussFunc->GetParError(2);
 
         // FIXME experiment
 //        jetHdEtaProjection[k][i][j]->Rebin(2);
@@ -2357,6 +2652,22 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				jetHFarDEtaProjection[k][i][j]->Rebin(nRebinFarEta); // rebinning in delta phi
 				jetHFarDEtaProjection[k][i][j]->Scale(1./nRebinFarEta); // now back in dNdPhi
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 				double fastMixedIntegral = 0;
 				double dEtaIntegral = 0;
 
@@ -2440,6 +2751,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				jetHdEtaProjection[k][i][j]->GetYaxis()->SetRangeUser(0,jetHdEtaProjection[k][i][j]->GetMaximum());
 				jetHdEtaProjection[k][i][j]->Draw();
 
+
           printf("HEllo, w0rld\n");
        // if (jetHSCdEtaProjection[k][i][j]) {
         if (jetHadronScatCentEP[k][i][j]) {
@@ -2506,10 +2818,6 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 
 				}
 
-
-				
-
-
 				jetHFit[k][i][j]->SetTitle(combinedNames);
 
 
@@ -2520,8 +2828,25 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 	//      }
 				fOut->Add(jetHFit[k][i][j]);
 				fOut->Add(jetHadronEP[k][i][j]);
-//				fOut->Add(jetHdEtaProjectionFit[k][i][j]);
 
+
+
+
+				// Drawing the delta eta projections, nearside and awayside (scaled)
+				cJetHNearSideDEta->cd(index);
+				jetHNearSideDEtaProjection[k][i][j]->Draw();
+				// draw the scaled away side projection;
+				jetHAwaySideDEtaProjection[k][i][j]->Draw("SAME");
+
+				// Draw the subtracted Delta Eta
+				cJetHDEtaSub->cd(index);
+				jetHDEtaSubProjection[k][i][j]->Draw();
+
+
+//				fOut->Add(jetHdEtaProjectionFit[k][i][j]);
+				fOut->Add(jetHNearSideDEtaProjection[k][i][j]);
+				fOut->Add(jetHAwaySideDEtaProjection[k][i][j]);
+				fOut->Add(jetHDEtaSubProjection[k][i][j]);
 
 				// Subtracting 2D Fit.
 				jetHadronBkgSub[k][i][j]->Add(jetHFit[k][i][j],-1);
@@ -2941,6 +3266,9 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			cSwiftParticle->Print(sSwiftParticle);
 			cJetHBkgSub->Print(sJetHBkgSub + ".pdf");
 			cJetHdEtaFit->Print(sJetHdEtaFit + ".pdf");
+			cJetHNearSideDEta->Print(sJetHNearSideDEtaFit + ".pdf");
+			cJetHDEtaSub->Print(sJetHDEtaSub + ".pdf");
+
 			if (bkg2DMethod == a2DFitSub) cJetHdEtadPhiFit->Print(sJetHdEtadPhiFit);
 		}
 		cSwiftJet->Print(sSwiftJet);
@@ -2966,6 +3294,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 		vector <TGraph *> 			ptBinChiSqGraphs;
 		vector <TGraph *> 			ptBinChiSqOverNDFGraphs;
 
+		vector <TGraphErrors *> ptBinNSEtaCentralWidthsGraphs;
 		vector <TGraphErrors *> ptBinNSRmsGraphs;
 		vector <TGraphErrors *> ptBinNSIntegralsGraphs;
 
@@ -2990,6 +3319,11 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			graph = new TGraphErrors(nAssocParticleBins,&ptBinsForTGraph[0], &ptBinBs[i][0],0,&ptBinBsErr[i][0]);
 			ptBinBsGraphs.push_back(graph);
 
+			// New Delta Eta Central Widths ptBinNSEtaCentralWidthGraphs
+			graph = new TGraphErrors(nAssocParticleBins,&ptBinsForTGraph[0], &ptBinNSEtaCentralWidths[i][0],0,&ptBinNSEtaCentralWidthsErr[i][0]);
+			ptBinNSEtaCentralWidthsGraphs.push_back(graph);
+
+
 			graph = new TGraphErrors(nAssocParticleBins,&ptBinsForTGraph[0], &ptBinNSIntegrals[i][0],0,&ptBinNSIntegralsErr[i][0]);
 			ptBinNSIntegralsGraphs.push_back(graph);
 			graph = new TGraphErrors(nAssocParticleBins,&ptBinsForTGraph[0], &ptBinNSRms[i][0],0,&ptBinNSRmsErr[i][0]);
@@ -3009,6 +3343,14 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 
 
 		for (int i = 0; i < nTriggerPtBins; i++) {
+
+			ptBinNSEtaCentralWidthsGraphs[i]->SetMarkerSize(1);
+			combinedClass = Form(jetClass +"_"+ sEPLabel + "_NS_EtaCentralWidths",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1));
+			ptBinNSEtaCentralWidthsGraphs[i]->SetName(combinedClass.Data());
+			ptBinNSEtaCentralWidthsGraphs[i]->SetTitle("Nearside #Delta#eta Central Width");
+			ptBinNSEtaCentralWidthsGraphs[i]->GetXaxis()->SetTitle(sAssocPtTitle.Data());
+			ptBinNSEtaCentralWidthsGraphs[i]->GetYaxis()->SetTitle("#sigma_{#Delta#eta,ns}");
+
 			ptBinASWidthsGraphs[i]->SetMarkerSize(1);
 // FIXME
 			//Width Graphs
@@ -3124,6 +3466,10 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 
 		for(int i = 0; i < nTriggerPtBins; i++) {
 			max_y = (min_y = 0);
+
+			ptBinNSEtaCentralWidthsGraphs[i]->SetLineColor(kBlack);
+			ptBinNSEtaCentralWidthsGraphs[i]->SetMarkerColor(kBlack);
+			ptBinNSEtaCentralWidthsGraphs[i]->SetMarkerStyle(33);
 
 			ptBinASWidthsGraphs[i]->SetLineColor(kBlack);
 			ptBinASWidthsGraphs[i]->SetMarkerColor(kBlack);
@@ -3395,10 +3741,10 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			ptBinChiSqGraphsEP.push_back(ptBinChiSqGraphs);
 			ptBinChiSqOverNDFGraphsEP.push_back(ptBinChiSqOverNDFGraphs);
 
+			ptBinNSEtaCentralWidthsGraphsEP.push_back(ptBinNSEtaCentralWidthsGraphs);
+
 			ptBinNSRmsGraphsEP.push_back(ptBinNSRmsGraphs);
 			ptBinNSIntegralsGraphsEP.push_back(ptBinNSIntegralsGraphs);
-
-
 	}
 
 	if (leadingJetPt) fOut->Add(leadingJetPt);
@@ -3479,8 +3825,9 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			fOut->Add(ptBinChiSqOverNDFGraphsEP[k][i]);
 
 			fOut->Add(ptBinNSRmsGraphsEP[k][i]);
+			fOut->Add(ptBinNSEtaCentralWidthsGraphsEP[k][i]);
 //			fOut->Add(ptBinNSIntegralsGraphsEP[k][i]);
-
+	// why commented out?
 
 		}
 	}
@@ -3611,6 +3958,33 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 
 
 			//NearSide
+
+		// Delta Eta NS Central Widths
+		for(int i = 0; i < nTriggerPtBins; i++) {
+			TMultiGraph * mg = new TMultiGraph();
+			for(int k = 0; k < nEPBins; k++) {
+
+				ptBinNSEtaCentralWidthsGraphsEP[k][i]->SetLineColor(colorList[k]);
+				ptBinNSEtaCentralWidthsGraphsEP[k][i]->SetMarkerColor(colorList[k]);
+				ptBinNSEtaCentralWidthsGraphsEP[k][i]->SetMarkerStyle(markerList[k]);
+				mg->Add(ptBinNSEtaCentralWidthsGraphsEP[k][i]);
+				legAS->AddEntry(ptBinNSEtaCentralWidthsGraphsEP[k][i],titleList[k],"lp");
+			}
+			mg->Draw(style);
+			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
+			mg->GetXaxis()->SetTitle(ptBinNSEtaCentralWidthsGraphsEP[0][i]->GetXaxis()->GetTitle());
+			mg->GetYaxis()->SetTitle(ptBinNSEtaCentralWidthsGraphsEP[0][i]->GetYaxis()->GetTitle());
+	//		ptBinASIntegralsGraphs[0]->GetYaxis()->SetRangeUser(min_y,max_y);
+			legAS->Draw("SAME");
+			canvas->Print(Form("EP_NS_EtaCentralWidths_JetPt_%0.f_%0.f.pdf",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
+			canvas->Print(Form("EP_NS_EtaCentralWidths_JetPt_%0.f_%0.f.C",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
+			canvas->Clear();
+			legAS->Clear();
+			canvas->SetLogy(0);
+		}
+
+
+		// Delta Phi NS Integrals
 		for(int i = 0; i < nTriggerPtBins; i++) {
 			TMultiGraph * mg = new TMultiGraph();
 			for(int k = 0; k < nEPBins; k++) {
@@ -3702,6 +4076,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				ptBinASYieldsGraphsEP[k][i]->RemovePoint(0);
 				ptBinASRmsGraphsEP[k][i]->RemovePoint(0);
 				ptBinNSRmsGraphsEP[k][i]->RemovePoint(0);
+				ptBinNSEtaCentralWidthsGraphsEP[k][i]->RemovePoint(0);
 			}
 		}
 	}

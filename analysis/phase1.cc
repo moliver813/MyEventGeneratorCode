@@ -63,12 +63,34 @@
 
 //using namespace fastjet::contrib;
 
+// True reaction plane angles
+double rpsi_2 = 0; // always 0
+// Chosen in toy model event-by-event
+double rpsi_3 = 0;
+double rpsi_4 = 0;
+
+// Determine with QnVector in a given eta range
+// Assume these are inclusive (toy and jewel particles used in calculation)
+double epsi_2 = 0;
+double epsi_3 = 0;
+double epsi_4 = 0;
+
+double epsiToyOnly_2 = 0;
+double epsiToyOnly_3 = 0;
+double epsiToyOnly_4 = 0;
+
+
 // Functions are defined at the end of file
 void printHelp(std::string input = "");
 void parseInput(int argc, char * argv[], TString & inputFilename, TString & outputFilename, double & jet_constituent_cut, bool & ptHardBinFlag, TString & responseMatrixFilename, int & iTriggerType);
 
-void AddToyModelParticles(int nGen, TRandom3 * rand, std::vector<fastjet::PseudoJet> &particles) {
-	if (!rand) return;
+// Adds toy particles to the given array
+// Returns an array of just the toy particles
+std::vector<fastjet::PseudoJet> AddToyModelParticles(int nGen, TRandom3 * rand, std::vector<fastjet::PseudoJet> &particles) {
+  
+  std::vector<fastjet::PseudoJet> toyParticles = {};
+
+	if (!rand) return toyParticles;
 
 //	float ToyEtaRange = 3; 
 	float tau = 2.; // Tau for Pt Spectrum. Mean value? Desired Mean value (+ ptmin)
@@ -90,8 +112,12 @@ void AddToyModelParticles(int nGen, TRandom3 * rand, std::vector<fastjet::Pseudo
   // add randomized v3 angle
   // Can pick v3 angle within 1 third of circle (or anywhere)
   //double psi_3 = rand->Rndm() * 2.*TMath::Pi()/3.;
-  double psi_3 = rand->Rndm() * 2.*TMath::Pi();
+  //double psi_3 = rand->Rndm() * 2.*TMath::Pi();
+  rpsi_3 = rand->Rndm() * 2.*TMath::Pi();
 
+  //double psi_4  should be partially correlated with ep2
+  // Random correlation for now
+  rpsi_4 = rand->Rndm() * 2.*TMath::Pi();
 
 	for (int i = 0; i < nGen * ToyEtaRange; i++) {
 		eta = (2.*rand->Rndm()-1)*ToyEtaRange;
@@ -114,9 +140,15 @@ void AddToyModelParticles(int nGen, TRandom3 * rand, std::vector<fastjet::Pseudo
 			double V2FP_0 = 0;
 			double V2FP_1 = 0;
 			double V2FP_2 = 0;		
+
+			double V3FP_0 = 0;
+			double V3FP_1 = 0;
+			double V3FP_2 = 0;		
+
 			double V4FP_0 = 0;
 			double V4FP_1 = 0;
 			double V4FP_2 = 0;		
+
 			switch (iFlowVersion) {
         // Experimental error in comments
 				case 3:
@@ -150,15 +182,17 @@ void AddToyModelParticles(int nGen, TRandom3 * rand, std::vector<fastjet::Pseudo
           V4FP_2 = 1.23961e+00;//   8.31609e-02
 			}
 			v2 = V2FP_0 * TMath::Landau(pt,V2FP_1,V2FP_2,false);
+			v3 = V3FP_0 * TMath::Landau(pt,V3FP_1,V3FP_2,false);
 			v4 = V4FP_0 * TMath::Landau(pt,V4FP_1,V4FP_2,false);
 
       // v3 approximation
       //
       v3 = v2*v2;
+      // FIXME replace this with new v3 measurements by me from MB
 
 			for (int z = 0; z < 30; z++) {
 				phi = rand->Rndm()*2*PI;
-				double pdf = 1. + 2.*v2*TMath::Cos(2.*phi) + 2. * TMath::Cos(3.*(phi - psi_3)) + 2.*v4*TMath::Cos(4.*phi);
+				double pdf = 1. + 2.*v2*TMath::Cos(2.*phi) + 2. * TMath::Cos(3.*(phi - rpsi_3)) + 2.*v4*TMath::Cos(4.*(phi - rpsi_4));
 				double testValue = 2.*rand->Rndm();
 				if (testValue <= pdf) break;
 				// After 30 tries, the phi will just be random
@@ -172,13 +206,44 @@ void AddToyModelParticles(int nGen, TRandom3 * rand, std::vector<fastjet::Pseudo
 		newParticle.set_user_index(kToyParticleLabel); // label for Toy model particles
 
     float fPi0Fraction = 0.2; // total guess for pi0s proportion at highest pt
-    if (rand->Rndm() < fPi0Fraction) newParticle.set_user_index(111);
+    fPi0Fraction = 1.0; // Testing using all toy particles as pi0s. May not be the worst idea, since the toy particles are already suppressed at high pt.
+    if (rand->Rndm() < fPi0Fraction) newParticle.set_user_index(kToyPi0Label);
 
 
 		//printf("DEBUG: Toy adding particle with (px=%f,py=%f,pz=%f,E=%f)\n",newParticle.px(),newParticle.py(),newParticle.pz(),newParticle.e());
 		particles.push_back(newParticle);
+    toyParticles.push_back(newParticle);
 	}
+  return toyParticles;
 }
+
+// Calculate event plane angles given an array of particles 
+// an order
+// and an eta range 
+double CalculateEventPlaneAngle(std::vector<fastjet::PseudoJet> particles, int iOrder, double fEtaMin = -0.9, double fEtaMax = 0.9) {
+
+  double fTotalWeight = 0;
+  double Qx = 0;
+  double Qy = 0;
+
+  for (int i = 0; i < particles.size(); i++) {
+    fastjet::PseudoJet part = particles[i];
+    double fPartEta = part.eta();
+    if (fPartEta < fEtaMin || fPartEta > fEtaMax) continue;
+    double fPartPhi = part.phi(); // 0 .. 2pi
+    double fLocalWeight = 1;
+    Qx += fLocalWeight * TMath::Cos(iOrder * fPartPhi);
+    Qy += fLocalWeight * TMath::Sin(iOrder * fPartPhi);
+    fTotalWeight += fLocalWeight;
+  }
+  if (fTotalWeight > 0) {
+    Qx = Qx / fTotalWeight;
+    Qy = Qy / fTotalWeight;
+  }
+
+  return TMath::ATan2(Qy,Qx) / iOrder;
+}
+
 
 // Function from Marco. Useful for handling pt hard bins with only a few counts
 void removeOutliers(TH1* h1, Int_t minBinValue = 2) {
@@ -470,6 +535,12 @@ void phase1(TString inputFilename, TString outputFilename, double jet_constituen
     case 1:
       printf("Will build correlations using Pi0 triggers.\n");
       break;
+    case 2:
+      printf("Will build correlations using Gamma triggers.\n");
+      break;
+    case 3:
+      printf("Will build correlations using hard scatter Gamma triggers.\n");
+      break;
     default:
       printf("Unknown Trigger type\n");
   }
@@ -647,6 +718,21 @@ void phase1(TString inputFilename, TString outputFilename, double jet_constituen
       weight = 1;
     }
   }
+
+  // Get the nScatCents, the number of scattering centers.
+  // In a hack, I am storing it in Ncoll_hard()
+  bool bHaveNScatCents = (0 != tree->GetBranch("nScatCents"));
+
+  int nScatCents = 0;
+
+  if (bHaveNScatCents) {
+    printf("Have an nScatCents branch\n");
+    tree->SetBranchAddress("nScatCents",&nScatCents);
+  } else {
+    printf("nScatCents is not present in this tree\n");
+  }
+
+
   if (iTriggerType == 0) printf("Jet resolution parameter R = %f\n",R);
 
   fastjet::JetDefinition jetDef(fastjet::antikt_algorithm, R);
@@ -658,6 +744,11 @@ void phase1(TString inputFilename, TString outputFilename, double jet_constituen
   std::vector<double> fTriggerPtBins = jetPtBins;
   if (iTriggerType == 1) {
     printf("Using Bins for Pi0-hadron analysis\n");
+    nTriggerPtBins = nPi0PtBins;
+    fTriggerPtBins = pi0PtBins;
+  }
+  if ((iTriggerType == 2) || (iTriggerType == 3)) {
+    printf("For gammas, currently using Bins for Pi0-hadron analysis\n");
     nTriggerPtBins = nPi0PtBins;
     fTriggerPtBins = pi0PtBins;
   }
@@ -691,9 +782,13 @@ void phase1(TString inputFilename, TString outputFilename, double jet_constituen
   if (iTriggerType == 0) {
     triggerType = "jet";
     jetClass = "jetPt_%.0f_%.0f";
-  } else {
+  } else if (iTriggerType == 1) {
     triggerType = "pi0";
     jetClass = "pi0Pt_%.0f_%.0f";
+    if (bUseZtBins) particleClass = "zT_%.2f_%.2f";
+  } else {
+    triggerType = "gamma";
+    jetClass = "gammaPt_%.0f_%.0f";
     if (bUseZtBins) particleClass = "zT_%.2f_%.2f";
   }
   TString combinedClass = "";
@@ -708,6 +803,45 @@ void phase1(TString inputFilename, TString outputFilename, double jet_constituen
   TH2F * phiPt = new TH2F("phiPt", "p_{T} vs #phi;#phi;p_{T}", 100, 0, 2.0*TMath::Pi(), (int) nTrackPtBins, (double *) &trackPtBins[0]);
 //  TH2F * phiPt = new TH2F("phiPt", "p_{T} vs #phi;#phi;p_{T}", 100, 0, 2.0*TMath::Pi(), 100, 0, 100);
   phiPt->Sumw2();
+
+  // FIXME limit the x ranges appropriately pi/2, pi/3, pi/4
+
+  // Toy Model and Flow histograms
+  // Event Plane Angles
+  TH1F * fEPsiInclEP2 = new TH1F("EPsiInclEP2","#Psi_{EP,2}",200,-TMath::Pi(),TMath::Pi());
+  TH1F * fEPsiInclEP3 = new TH1F("EPsiInclEP3","#Psi_{EP,3}",200,-TMath::Pi(),TMath::Pi());
+  TH1F * fEPsiInclEP4 = new TH1F("EPsiInclEP4","#Psi_{EP,4}",200,-TMath::Pi(),TMath::Pi());
+
+  TH1F * fEPsiToyOnlyEP2 = new TH1F("EPsiToyOnlyEP2","#Psi_{EP,2} (Toy Particles Only)",200,-TMath::Pi(),TMath::Pi());
+  TH1F * fEPsiToyOnlyEP3 = new TH1F("EPsiToyOnlyEP3","#Psi_{EP,3} (Toy Particles Only)",200,-TMath::Pi(),TMath::Pi());
+  TH1F * fEPsiToyOnlyEP4 = new TH1F("EPsiToyOnlyEP4","#Psi_{EP,4} (Toy Particles Only)",200,-TMath::Pi(),TMath::Pi());
+
+  // RP for mc true angles
+  TH2F * fToyVsRP2 = new TH2F("ToyVsRP2","ToyVsRP2;#Delta#Psi_{RP,2}",100,-TMath::Pi(),TMath::Pi(),(int) nTrackPtBins, (double *) &trackPtBins[0]);
+  TH2F * fToyVsRP3 = new TH2F("ToyVsRP3","ToyVsRP3;#Delta#Psi_{RP,3}",100,-TMath::Pi(),TMath::Pi(),(int) nTrackPtBins, (double *) &trackPtBins[0]);
+  TH2F * fToyVsRP4 = new TH2F("ToyVsRP4","ToyVsRP4;#Delta#Psi_{RP,4}",100,-TMath::Pi(),TMath::Pi(),(int) nTrackPtBins, (double *) &trackPtBins[0]);
+
+  TH2F * fToyVsEP2 = new TH2F("ToyVsEP2","ToyVsEP2;#Delta#Psi_{EP,2}",100,-TMath::Pi(),TMath::Pi(),(int) nTrackPtBins, (double *) &trackPtBins[0]);
+  TH2F * fToyVsEP3 = new TH2F("ToyVsEP3","ToyVsEP3;#Delta#Psi_{EP,3}",100,-TMath::Pi(),TMath::Pi(),(int) nTrackPtBins, (double *) &trackPtBins[0]);
+  TH2F * fToyVsEP4 = new TH2F("ToyVsEP4","ToyVsEP3;#Delta#Psi_{EP,4}",100,-TMath::Pi(),TMath::Pi(),(int) nTrackPtBins, (double *) &trackPtBins[0]);
+
+  // Just the toy pi0s. Maybe toy jets at some point.
+  // FIXME make these trigger pt bins
+  TH2F * fToyTriggerVsEP2 = new TH2F("ToyTriggerVsEP2","ToyTriggerVsEP2;#Delta#Psi_{EP,2}",100,-TMath::Pi(),TMath::Pi(),(int) nTrackPtBins, (double *) &trackPtBins[0]);
+  TH2F * fToyTriggerVsEP3 = new TH2F("ToyTriggerVsEP3","ToyTriggerVsEP3;#Delta#Psi_{EP,3}",100,-TMath::Pi(),TMath::Pi(),(int) nTrackPtBins, (double *) &trackPtBins[0]);
+  TH2F * fToyTriggerVsEP4 = new TH2F("ToyTriggerVsEP4","ToyTriggerVsEP3;#Delta#Psi_{EP,4}",100,-TMath::Pi(),TMath::Pi(),(int) nTrackPtBins, (double *) &trackPtBins[0]);
+
+  // Histograms for calculating event plane resolutions
+  // Maybe use inclusive or toy only
+  TH1F * fEP2CosDeltaPsiIncl    = new TH1F("EP2CosDeltaPsiIncl","EP2 <Cos(2(#Psi_{Rec} - #Psi_{True}))>",200,-1,1);
+  TH1F * fEP2CosDeltaPsiToyOnly = new TH1F("EP2CosDeltaPsiToyOnly","EP2 <Cos(2(#Psi_{Rec} - #Psi_{True}))>",200,-1,1);
+
+  TH1F * fEP3CosDeltaPsiIncl    = new TH1F("EP3CosDeltaPsiIncl","EP3 <Cos(3(#Psi_{Rec} - #Psi_{True}))>",200,-1,1);
+  TH1F * fEP3CosDeltaPsiToyOnly = new TH1F("EP3CosDeltaPsiToyOnly","EP3 <Cos(3(#Psi_{Rec} - #Psi_{True}))>",200,-1,1);
+
+  TH1F * fEP4CosDeltaPsiIncl    = new TH1F("EP4CosDeltaPsiIncl","EP4 <Cos(4(#Psi_{Rec} - #Psi_{True}))>",200,-1,1);
+  TH1F * fEP4CosDeltaPsiToyOnly = new TH1F("EP4CosDeltaPsiToyOnly","EP4 <Cos(4(#Psi_{Rec} - #Psi_{True}))>",200,-1,1);
+
 
   TH1F * dijetAj = new TH1F("dijetAj","A_{j};A_{j}",100,0,1); dijetAj->Sumw2();
   TH2F * dijetAjJetPt = new TH2F("dijetAjJetPt","A_{j} vs p_{t}^{jet};p_{t}^{jet};A_{j}",(int) nJetPtBins, (double *) &jetPtBins[0],100,0,1); dijetAjJetPt->Sumw2();
@@ -1178,9 +1312,23 @@ void phase1(TString inputFilename, TString outputFilename, double jet_constituen
       jet.set_user_index(particleID->at(particleNumber)); // storing pid in user index
 
       if (iTriggerType == 1) {
-        if (particleID->at(particleNumber) == 111) {
+        if (abs(particleID->at(particleNumber)) == 111) { // Pi0 (or toy pi0)
 					if (jet.pt() >= pi0_pt_min && abs(jet.eta()) < pi0_eta_cut) { 
 						jets.push_back(jet); // treat the pi0 as a jet in this code
+					}
+        }
+      } else if (iTriggerType == 2) {
+        if (particleID->at(particleNumber) == 22) { // Gamma
+					if (jet.pt() >= pi0_pt_min && abs(jet.eta()) < pi0_eta_cut) { 
+						jets.push_back(jet); // treat the gamma as a pi0 in this code
+            // may want to use separate bins for gammas
+					}
+        }
+      } else if (iTriggerType == 3) {
+        if ((particleID->at(particleNumber) == 22) && (statusOn && status->at(particleNumber) == 6)) { // Gamma and Hard scatter
+					if (jet.pt() >= pi0_pt_min && abs(jet.eta()) < pi0_eta_cut) { 
+						jets.push_back(jet); // treat the gamma as a pi0 in this code
+            // may want to use separate bins for gammas
 					}
         }
       }
@@ -1223,16 +1371,22 @@ void phase1(TString inputFilename, TString outputFilename, double jet_constituen
 		
     // don't add to consituent particles, for convenience
 		//int nParticlesBefore = particles.size();
+		std::vector<fastjet::PseudoJet> toyParticles;
 		if (nToyParticles > 0) {
-			AddToyModelParticles(nToyParticles,rand,particles);
+			toyParticles = AddToyModelParticles(nToyParticles,rand,particles);
 		}
 		//int nParticlesAfter = particles.size();
 		//printf("Toy increased n particles from %d to %d\n",nParticlesBefore,nParticlesAfter);
     // Cut particles using erase remove idiom to avoid worrying about removing particles incorrectly
     particles.erase( std::remove_if(particles.begin(), particles.end(), rejectParticle), particles.end() );
+
+    toyParticles.erase( std::remove_if(toyParticles.begin(), toyParticles.end(), rejectParticle), toyParticles.end() );
+
     scatCents.erase( std::remove_if(scatCents.begin(),scatCents.end(), rejectParticle), scatCents.end() );
 
     constParticles.erase( std::remove_if(constParticles.begin(), constParticles.end(), rejectParticle), constParticles.end() );
+
+
 
     fastjet::AreaDefinition areaDef(fastjet::active_area,fastjet::GhostedAreaSpec(ghost_maxrap,1,ghost_area));
     fastjet::ClusterSequenceArea * cs = 0;
@@ -1257,9 +1411,73 @@ void phase1(TString inputFilename, TString outputFilename, double jet_constituen
     else if (iTriggerType == 1) { // Pi0s
       // FIXME
       jets = fastjet::sorted_by_pt(jets);
+    } 
+    else if (iTriggerType == 2 ) { // Gammas 
+      jets = fastjet::sorted_by_pt(jets);
     }
 
+    // Event Plane and Flow analysis
+    // analyize two objects jets and particles
+    // Already have true event plane angles ep2 = 0, and ep3 = psi_3
+    //
+    epsi_2 = CalculateEventPlaneAngle(particles,2);
+    epsi_3 = CalculateEventPlaneAngle(particles,3);
+    epsi_4 = CalculateEventPlaneAngle(particles,4);
+
+    epsiToyOnly_2 = CalculateEventPlaneAngle(toyParticles,2);
+    epsiToyOnly_3 = CalculateEventPlaneAngle(toyParticles,3);
+    epsiToyOnly_4 = CalculateEventPlaneAngle(toyParticles,4);
+
+    fEPsiInclEP2->Fill(epsi_2);
+    fEPsiInclEP3->Fill(epsi_3);
+    fEPsiInclEP4->Fill(epsi_4);
+
+    fEPsiToyOnlyEP2->Fill(epsiToyOnly_2);
+    fEPsiToyOnlyEP3->Fill(epsiToyOnly_3);
+    fEPsiToyOnlyEP4->Fill(epsiToyOnly_4);
+
+    fEP2CosDeltaPsiIncl->Fill(TMath::Cos(2.*(epsi_2 - rpsi_2)));
+    fEP3CosDeltaPsiIncl->Fill(TMath::Cos(3.*(epsi_3 - rpsi_3)));
+    fEP4CosDeltaPsiIncl->Fill(TMath::Cos(4.*(epsi_4 - rpsi_4)));
+
+    fEP2CosDeltaPsiToyOnly->Fill(TMath::Cos(2.*(epsiToyOnly_2 - rpsi_2)));
+    fEP2CosDeltaPsiToyOnly->Fill(TMath::Cos(3.*(epsiToyOnly_3 - rpsi_3)));
+    fEP2CosDeltaPsiToyOnly->Fill(TMath::Cos(4.*(epsiToyOnly_4 - rpsi_4)));
+
+
+    // Write method to calculate ep_n from eta range. input: weighting parameter for pt.
+    // Could also get vn out of it, maybe?
+    for (int i = 0; i < particles.size(); i++) {
+      fastjet::PseudoJet part = particles[i];
+
+      // For this, I'd like to manipulate the angles s.t. they
+      // are in the range [-pi/n, pi/n)
+      // Or maybe [0, pi/n), using |Delta psi|, as I do in data.
+
+      double part_phi = part.phi(); // [0 .. 2pi)
+      double delta_psi_2 = fmod(part_phi - epsi_2, 2.*TMath::Pi()/2.);
+      double delta_psi_3 = fmod(part_phi - epsi_3, 2.*TMath::Pi()/3.);
+      double delta_psi_4 = fmod(part_phi - epsi_4, 2.*TMath::Pi()/4.);
+
+
+
+      if (part.user_index() == kToyPi0Label) {
+        fToyTriggerVsEP2->Fill(delta_psi_2,weight);
+        fToyTriggerVsEP3->Fill(delta_psi_3,weight);
+        fToyTriggerVsEP4->Fill(delta_psi_4,weight);
+      }
+
+    }
+
+
+
+
+
+
+
     double jet_phi, jet_eta, rot_x, rot_y, vertex_r;
+
+    // Can try using hard scatter itself as trigger here
 
     // Begin the actual analysis 
 
@@ -2359,6 +2577,16 @@ void parseInput(int argc, char * argv[], TString & inputFilename, TString & outp
           iTriggerType = 1; //pi0
           i++;
           continue;
+        }
+        else if (argv[i+1] == std::string("gamma")) {
+          iTriggerType = 2; // gamma
+          i++;
+          continue;
+        }
+        else if (argv[i+1] == std::string("gammaHS")) {
+          iTriggerType = 3; // gamma from Hard Scatter
+          i++;
+          continue;
         } else {
           std::cout << "Error: unexpected trigger type " << argv[i+1] << std::endl;
         }
@@ -2542,8 +2770,10 @@ void printHelp(std::string input)
     << "\t-> Sets the input filename. Default: \"root/pp.root\"" << std::endl
     << std::setw(5) << std::left << "\t-o" << "\t--outputFilename <filename>" 
     << "\t-> Sets the output filename. Default: \"root/pp.hist.root\"" << std::endl      
-    << std::setw(5) << std::left << "\t-t" << "\t--triggerType [pi0 or jet]" 
+    << std::setw(5) << std::left << "\t-t" << "\t--triggerType [pi0, gamma, or jet]" 
     << "\t-> Sets whether pi0s or jets or used as the trigger. Default: jet." << std::endl
+//    << std::setw(5) << std::left << "\t-t" << "\t--triggerType [pi0 or jet]" 
+//    << "\t-> Sets whether pi0s or jets or used as the trigger. Default: jet." << std::endl
     << std::setw(5) << std::left << "\t-c" << "\t--constituentCut <value>" 
     << "\t-> Sets the constituent cut for jet finding. Default: 0." << std::endl
     << std::setw(5) << std::left << "\t-r" << "\t--jetResolutionParameter <value>" 

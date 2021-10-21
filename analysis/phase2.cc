@@ -47,6 +47,7 @@
 #include <TMath.h>
 #include <TCanvas.h>
 #include <TAxis.h>
+#include <TGaxis.h>
 #include <TMultiGraph.h>
 #include <TGraph.h>
 #include <TGraphErrors.h>
@@ -73,6 +74,10 @@ TString SystematicUncertOutFilePath = "";
 
 TString outputDirPath = "output/";
 
+double fXAxisTitleOffset = 1.1;
+
+int iForceTriggerType = -1;
+
 void set_plot_style() {
   const Int_t NRGBs = 5;
   const Int_t NCont = 255;
@@ -83,6 +88,25 @@ void set_plot_style() {
   Double_t blue[NRGBs]  = { 0.51, 1.00, 0.12, 0.00, 0.00 };
   TColor::CreateGradientColorTable(NRGBs, stops, red, green, blue, NCont);
   gStyle->SetNumberContours(NCont);
+
+	gStyle->SetLabelSize(0.04,"X");
+	gStyle->SetLabelSize(0.04,"Y");
+	gStyle->SetTitleSize(4.5,"X");
+	gStyle->SetTitleSize(4.5,"Y");
+	gStyle->SetTitleOffset(1.0,"Y");
+	gStyle->SetTitleOffset(1.1,"X");
+
+	gStyle->SetPadRightMargin(0.02);
+  gStyle->SetPadLeftMargin(0.1);
+  gStyle->SetPadTopMargin(0.07);
+  //gStyle->SetPadBottomMargin(0.15);
+  //gStyle->SetPadBottomMargin(0.1);
+
+	gStyle->SetOptTitle(0);
+
+	TGaxis::SetMaxDigits(2);
+//	gAxis->SetMaxDigits(2);
+
 }
 
 // Copied from phase2 of GammaHadron
@@ -245,6 +269,126 @@ void calculateVnAndError(TH1F * phiProj, double &v2, double &v2Error, double &v4
 	v4Error = fit->GetParError(2);
 	v6 = fit->GetParameter(3);
 	v6Error = fit->GetParError(3);
+}
+
+// FIXME make new CalculateVnAndError functions, for V3, or V2 + V4, or V4
+
+// Could also Usef FitXSlices
+TGraphErrors * CalculateVnGraph(TH2F * hist, int order, TString name) {
+	// Need to introduce some way to control y-axis binning.
+	int nBinsY = hist->GetNbinsY();
+
+	TGraphErrors * vNGraph = new TGraphErrors(nBinsY);
+	vNGraph->GetXaxis()->SetTitle(hist->GetYaxis()->GetTitle());
+	return vNGraph;
+}
+
+//TObjArray
+// Could add ancilliary histogram for output?
+TH1F * CalculateVnHistogram(TH2F * hist, int order, TString name) {
+
+	// Define function in range 2 pi / n
+	double xMin = 0;
+	double xMax = TMath::Pi() / order;
+
+	// FIXME temporary fix until fresh toy model with the fixed range are in
+//	if (order > 2) {
+//		xMax -= 0.1;
+//	}
+
+
+	int TargetIndex = 2; // Index of parameter we are interested in.
+
+	TString sFunctionName = Form("v%dFit_%s",order,hist->GetName());
+//	TString sFunctionString = Form("[0]*(1+2.*[1]*TMath::Cos(%d*x))",order);
+	TString sFunctionString = Form("[0]*(1+2*[1]*TMath::Cos(x) + 2*[2]*TMath::Cos(2*x)+2*[3]*TMath::Cos(3*x) + 2*[4]*TMath::Cos(4*x))");
+
+	TF1 * fitVn = new TF1("vNFit",sFunctionString.Data(),xMin,xMax);
+	fitVn->SetParName(0,"B");
+	fitVn->SetParName(1,"v1");
+	fitVn->SetParName(2,"v2");
+	fitVn->SetParName(3,"v3");
+	fitVn->SetParName(4,"v4");
+
+//	fitVn->SetParLimits(1,-0.4,0.4);
+//	fitVn->SetParLimits(2,-0.4,0.4);
+//	fitVn->SetParLimits(3,-0.4,0.4);
+//	fitVn->SetParLimits(4,-0.4,0.4);
+
+
+	fitVn->FixParameter(1,0.);
+	switch (order) {
+		case 2:
+			fitVn->FixParameter(3,0.0);
+			TargetIndex = 2;
+			break;
+		case 3:
+			fitVn->FixParameter(2,0.0);
+			fitVn->FixParameter(4,0.0);
+			TargetIndex = 3;
+			break;
+		default:
+		case 4:
+			fitVn->FixParameter(3,0.0);
+			TargetIndex = 4;
+		break;
+	}
+
+	
+	TObjArray arr;
+	hist->FitSlicesX(fitVn,0,-1,5,"NR",&arr);
+	//hist->FitSlicesX(fitVn,0,-1,5,"QNR",&arr);
+	//hist->FitSlicesX(fitVn,0,-1,0,"QNR",&arr);
+	//printf("Debug: histogram array has %d entries\n",arr.GetEntries());
+	TH1F * hVn =(TH1F *) ((TH1F *) arr.At(TargetIndex))->Clone(); // The Vn term
+	hVn->SetDirectory(0);
+	printf("Debug FitSlices Hist has name %s and title %s. (index = %d,order = %d)\n",hVn->GetName(),hVn->GetTitle(),TargetIndex,order);
+	hVn->SetName(name.Data());
+	hVn->SetTitle(name.Data());
+
+	hVn->GetXaxis()->SetTitle(hist->GetYaxis()->GetTitle());
+
+	hVn->Draw();
+	// maybe also draw chisquared
+	gPad->Print(Form("CalcV%d_%s.pdf",order,name.Data()));
+	gPad->Print(Form("CalcV%d_%s.png",order,name.Data()));
+
+
+	return hVn;
+}
+
+
+TGraphErrors * CalculateVnHistogramIntegral(TH2F * hist, int order, TString name) {
+
+	// Define function in range 2 pi / n
+	double xMin = 0;
+	double xMax = TMath::Pi() / order;
+
+	int nXBins = hist->GetNbinsX(); // How many pt bins
+
+
+	TGraphErrors * gVn = new TGraphErrors(nXBins);
+
+	for (int i = 1; i <= nXBins; i++) {
+
+	// Could directly integrate Cos(n x) * ProjX
+	// or try FFT, then the second bin is the one I want? or the first?
+		TH1D * hProjX = hist->ProjectionX(Form("%s_px%d",name.Data(),i),i,i);
+		double fIntegral = 0;
+		double fIntegralError = 0;
+		double yBinCenter = hist->GetYaxis()->GetBinCenter(i);
+		double yBinWidth  = hist->GetYaxis()->GetBinWidth(i);
+
+		
+
+
+		gVn->SetPoint(i-1,yBinCenter,fIntegral);
+		gVn->SetPointError(i-1,yBinWidth,fIntegralError);
+
+
+	}
+	gVn->GetXaxis()->SetTitle(hist->GetYaxis()->GetTitle());
+	return gVn;
 }
 
 
@@ -567,7 +711,10 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 
 	// Determine if Jet-Hadron or Pi0-Hadron 
 
-	int iTriggerType = 0; // 0 for jets, 1 for pi0, 2 for pi0 with zt
+	int iTriggerType = 0;
+	// 0 for jets, 1 for pi0, 2 for pi0 with zt
+	// 3 for gamma (pt assoc), 4 for gamma (zt)
+
 //	int iParticleBinChoice = 0; // 0 for jetH pt bins, 1 for pi0H pt bins 2 for pi0H zt bins
 
 	// really ad-hoc
@@ -584,9 +731,32 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 		if (fExampleHist != 0) {
 			iTriggerType = 2; 
 //			iParticleBinChoice = 2;
+		} else {
+			sExampleHist = "gammaHadron_pi0Pt_5_7_particlePt_0.20_0.40";
+			fExampleHist = (TH2F *) fIn->Get(sExampleHist);
+			if (fExampleHist != 0) {
+				iTriggerType = 3; 
+			} 
 		}
 	}
 	
+
+	// Force trigger type here
+	if (iForceTriggerType >= 0) {
+		printf("Overriding trigger type %d with type %d\n",iTriggerType,iForceTriggerType);
+		iTriggerType = iForceTriggerType;
+	}
+
+
+	// Change Delta Eta Cuts if requested
+	if (dEtaCutMode == 1) {
+		fprintf(stderr,"DEtaCut Mode 1 not coded yet\n");
+	}
+	if (dEtaCutMode == 2) {
+		fDeltaEtaPeakCut = fFarOutDeltaEtaMin;
+		delta_eta_cut = fFarOutDeltaEtaMax;
+		printf("Changing Delta Eta Far Range to %f - %f\n",fDeltaEtaPeakCut,delta_eta_cut);
+	}
 
 
   // Get runInfo TTree
@@ -622,9 +792,15 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 
 	TString sTriggerName = "jet";
 	TString sTriggerTitle = "Jet";
-
+	
   TString jetClass = "jetPt_%.0f_%.0f";
   TString particleClass = "particlePt_%.2f_%.2f";
+  //TString particleClass = "particlePt_%.0f_%.0f";
+	//double fParticleLabelScale = 100.;
+	// Attempting to get rid of of the ',', move 1.00 to 0100
+	double fParticleLabelScale = 1.;
+
+
 
 	TString sAssocPtTitle = "p_{T}^{associated} (GeV/c)";
 
@@ -635,12 +811,48 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 	std::vector<double> assocParticlePtBins = {};
 
 	switch (iTriggerType) {
+		case 5:
+			printf("Doing Gamma-hadron analysis with zT bins\n");
+			sTriggerName = "gamma";
+			sTriggerTitle = "#gamma";
+			jetClass = "gammaPt_%.0f_%.0f";
+			particleClass = "zT_%.2f_%.2f";
+			//particleClass = "zT_%.0f_%.0f";
+			sAssocPtTitle = "z_{T}";
+			nTriggerPtBins = nPi0PtBins;
+			fTriggerPtBins = pi0PtBins;
+			nAssocParticleBins = nZtBins;
+			assocParticlePtBins = zTBins;
+			break;
+		case 4:
+			printf("Doing direct gamma-hadron analysis with pT assoc bins\n");
+			sTriggerName = "gamma";
+			sTriggerTitle = "#gamma";
+			jetClass = "gammaPt_%.0f_%.0f";
+			nTriggerPtBins = nGammaPtBins;
+			fTriggerPtBins = gammaPtBins;
+			nAssocParticleBins = nPi0ParticlePtBins;
+      assocParticlePtBins = pi0ParticlePtBins; 
+			break;
+		case 3:
+			printf("Doing gamma-hadron analysis with pT assoc bins\n");
+			sTriggerName = "gamma";
+			//sTriggerName = "pi0"; // FIXME temporary
+			sTriggerTitle = "#gamma";
+			//jetClass = "pi0Pt_%.0f_%.0f"; // FIXME temporary
+			jetClass = "gammaPt_%.0f_%.0f";
+			nTriggerPtBins = nPi0PtBins;
+			fTriggerPtBins = pi0PtBins;
+			nAssocParticleBins = nPi0ParticlePtBins;
+      assocParticlePtBins = pi0ParticlePtBins; 
+			break;
 		case 2:
 			printf("Doing Pi0-hadron analysis with zT bins\n");
 			sTriggerName = "pi0";
 			sTriggerTitle = "#pi^{0}";
 			jetClass = "pi0Pt_%.0f_%.0f";
 			particleClass = "zT_%.2f_%.2f";
+			//particleClass = "zT_%.0f_%.0f";
 			sAssocPtTitle = "z_{T}";
 			nTriggerPtBins = nPi0PtBins;
 			fTriggerPtBins = pi0PtBins;
@@ -790,6 +1002,14 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 	TH1F * ptLossSubleadingPartonPtBinEP[nEPBins][nJetPtBins];
 	TH1F * energyLossSubleadingPartonPtBinEP[nEPBins][nJetPtBins];
 
+	TH2F * leadingJetPtNScatCent[nEPBins];
+	for (int i = 0; i < nEPBins; i++) {
+		leadingJetPtNScatCent[i] = (TH2F *) fIn->Get(Form("leadingJetPtNScatCent_EP_%d",i));
+		if (!leadingJetPtNScatCent[i])  {
+			printf("Did not find a leadingJetPtNScatCent\n");
+		}
+	}
+
 
 
 
@@ -878,7 +1098,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
     swiftJetYield[i] = (TH1F *) fIn->Get(combinedClass);
     for (unsigned int j = 0; j < nAssocParticleBins; j++)
     {
-      combinedClass = Form("%sHadron_" + jetClass + "_" + particleClass, sTriggerName.Data(), fTriggerPtBins.at(i), fTriggerPtBins.at(i+1), assocParticlePtBins.at(j), assocParticlePtBins.at(j+1));
+      combinedClass = Form("%sHadron_" + jetClass + "_" + particleClass, sTriggerName.Data(), fTriggerPtBins.at(i), fTriggerPtBins.at(i+1),assocParticlePtBins.at(j), assocParticlePtBins.at(j+1));
 			printf("Searching for object %s\n",combinedClass.Data());
       jetHadron[i][j] = (TH2F *) fIn->Get(combinedClass);
       jetHadron[i][j]->Scale(1./jetHadron[i][j]->GetXaxis()->GetBinWidth(1)); // normalized to dN/dEta
@@ -978,7 +1198,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			}
 			for (unsigned int j = 0; j < nAssocParticleBins; j++)
 			{
-				combinedClass = Form("%sHadron_EP_%d_" + jetClass + "_" + particleClass, sTriggerName.Data(), k, fTriggerPtBins.at(i), fTriggerPtBins.at(i+1), assocParticlePtBins.at(j), assocParticlePtBins.at(j+1));
+				combinedClass = Form("%sHadron_EP_%d_" + jetClass + "_" + particleClass, sTriggerName.Data(), k, fTriggerPtBins.at(i), fTriggerPtBins.at(i+1), fParticleLabelScale*assocParticlePtBins.at(j), fParticleLabelScale*assocParticlePtBins.at(j+1));
 				jetHadronEP[k][i][j] = (TH2F *) fIn->Get(combinedClass);
 				if (jetHadronEP[k][i][j]) { 
 					jetHadronEP[k][i][j]->Scale(1./jetHadronEP[k][i][j]->GetYaxis()->GetBinWidth(1)); // scaling by delta phi bin width
@@ -987,7 +1207,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 					jetHadronEP[k][i][j]->SetName(tempName);
 				}
 
-				combinedClass = Form("%sHadronScatCent_EP_%d_" + jetClass + "_" + particleClass, sTriggerName.Data(), k, fTriggerPtBins.at(i), fTriggerPtBins.at(i+1), assocParticlePtBins.at(j), assocParticlePtBins.at(j+1));
+				combinedClass = Form("%sHadronScatCent_EP_%d_" + jetClass + "_" + particleClass, sTriggerName.Data(), k, fTriggerPtBins.at(i), fTriggerPtBins.at(i+1), fParticleLabelScale*assocParticlePtBins.at(j), fParticleLabelScale*assocParticlePtBins.at(j+1));
 				jetHadronScatCentEP[k][i][j] = (TH2F *) fIn->Get(combinedClass);
 				if (jetHadronScatCentEP[k][i][j]) { 
 					jetHadronScatCentEP[k][i][j]->Scale(1./jetHadronScatCentEP[k][i][j]->GetYaxis()->GetBinWidth(1));
@@ -1242,6 +1462,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 	// maybe calculate v2 in the trigger pt bins
 	//jetPhiPt->Draw("COLZ");
 	TF1 * FitJetEtaPtBins[nTriggerPtBins];
+	TF1 * FitJetEtaPtBinsNoV4[nTriggerPtBins];
 	TH1D * JetEtaPtBins[nTriggerPtBins];
 	TLegend * legJetEtaPtBins = new TLegend(0.6,0.7,0.85,0.9);
 	for (int i = 0; i < nTriggerPtBins; i++) {
@@ -1260,6 +1481,13 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 		FitJetEtaPtBins[i] = new TF1(Form("TriggerV2FitBin%d",i),"(1./(2*TMath::Pi())) * (1 + 2 * [0] * TMath::Cos(2.*x) + 2*[1]*TMath::Cos(4.*x))",0,2*PI);
 		JetEtaPtBins[i]->Fit(FitJetEtaPtBins[i],"0");
 		FitJetEtaPtBins[i]->SetLineColor(cTriggerColorList[i]);
+
+
+		FitJetEtaPtBinsNoV4[i] = new TF1(Form("TriggerV2NoV4FitBin%d",i),"(1./(2*TMath::Pi())) * (1 + 2 * [0] * TMath::Cos(2.*x))",0,2*PI);
+		JetEtaPtBins[i]->Fit(FitJetEtaPtBinsNoV4[i],"0");
+		FitJetEtaPtBinsNoV4[i]->SetLineColor(cTriggerColorList[i]+1);
+
+
 	}
 	for (int i = 0; i < nTriggerPtBins; i++) {
 		if (i == 0) JetEtaPtBins[i]->Draw(); 
@@ -1272,6 +1500,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 	canvas->Print("TriggerPhiDistPtBins.C");
 	TGraphErrors * TriggerV2Graph = new TGraphErrors(nTriggerPtBins);
 	TGraphErrors * TriggerV4Graph = new TGraphErrors(nTriggerPtBins);
+	TGraphErrors * TriggerV2NoV4Graph = new TGraphErrors(nTriggerPtBins);
 	for (int i = 0; i < nTriggerPtBins; i++) {
 		TriggerV2Graph->SetPoint(i,(fTriggerPtBins[i] + fTriggerPtBins[i+1])/2.,FitJetEtaPtBins[i]->GetParameter(0));
 		TriggerV2Graph->SetPointError(i,(fTriggerPtBins[i+1] - fTriggerPtBins[i])/2.,FitJetEtaPtBins[i]->GetParError(0));
@@ -1280,7 +1509,21 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 		TriggerV4Graph->SetPoint(i,(fTriggerPtBins[i] + fTriggerPtBins[i+1])/2.,FitJetEtaPtBins[i]->GetParameter(1));
 		TriggerV4Graph->SetPointError(i,(fTriggerPtBins[i+1] - fTriggerPtBins[i])/2.,FitJetEtaPtBins[i]->GetParError(1));
 
+		TriggerV2NoV4Graph->SetPoint(i,(fTriggerPtBins[i] + fTriggerPtBins[i+1])/2.,FitJetEtaPtBinsNoV4[i]->GetParameter(0));
+		TriggerV2NoV4Graph->SetPointError(i,(fTriggerPtBins[i+1] - fTriggerPtBins[i])/2.,FitJetEtaPtBinsNoV4[i]->GetParError(0));
+
+
 	}
+
+
+
+	TriggerV2NoV4Graph->SetName("Trigger_V2NoV4");
+	TriggerV2NoV4Graph->SetTitle("Trigger v_{2} (No v_{4};p_{T} GeV/c;v_{2}");
+	TriggerV2NoV4Graph->SetMarkerStyle(kOpenSquare);
+	TriggerV2NoV4Graph->SetLineColor(kViolet+1);
+	TriggerV2NoV4Graph->SetMarkerColor(kViolet+1);
+
+
 	TriggerV2Graph->SetMarkerStyle(kFullSquare);
 	TriggerV2Graph->SetName("Trigger_V2");
 	TriggerV2Graph->SetTitle("Trigger v_{2};p_{T} GeV/c;v_{2}");
@@ -1289,7 +1532,10 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 	TriggerV4Graph->SetName("Trigger_V4");
 	TriggerV4Graph->SetTitle("Trigger v_{4};p_{T} GeV/c;v_{4}");
 
+	TLegend * legTriggerV2 = new TLegend(0.3,0.2,0.3,0.2);
 	TriggerV2Graph->Draw("ALP");
+	TriggerV2NoV4Graph->Draw("LP SAME");
+	fOut->Add(TriggerV2NoV4Graph);
 	canvas->Print("TriggerV2.pdf");
 	canvas->Print("TriggerV2.C");
 	fOut->Add(TriggerV2Graph);
@@ -1298,6 +1544,17 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 	canvas->Print("TriggerV4.pdf");
 	canvas->Print("TriggerV4.C");
 	fOut->Add(TriggerV4Graph);
+
+	// Repeat for V3?
+
+
+	// Invariant mass analysis
+	// TH2D	TwoPartInvarMassEP0
+	// TH2D	TwoPartInvarMassThetaCutHighEP0
+	// TH2D	TwoPartInvarMassThetaCutLowEP0
+
+
+
 
   if (dijetAj) {
     dijetAj->Rebin(4);
@@ -1908,6 +2165,202 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 		fOut->Add(particleV6);
 	}
 	
+	// Calculate New Flow histograms
+	TH1F * hToyV2EP = 0;
+	TH1F * hToyV3EP = 0;
+	TH1F * hToyV4EP = 0;
+	TH1F * hToyV2RP = 0;
+	TH1F * hToyV3RP = 0;
+	TH1F * hToyV4RP = 0;
+
+	TH1F * hInclusiveV2EP = 0;
+	TGraphErrors * gInclusiveV2IntegralEP = 0; // direct integration or FFT
+	TH1F * hInclusiveV3EP = 0;
+	TH1F * hInclusiveV4EP = 0;
+	TH1F * hInclusiveV2RP = 0;
+	TH1F * hInclusiveV3RP = 0;
+	TH1F * hInclusiveV4RP = 0;
+
+	TH1F * hToyTriggerV2EP = 0;
+	TH1F * hToyTriggerV3EP = 0;
+	TH1F * hToyTriggerV4EP = 0;
+	TH1F * hToyTriggerV2RP = 0;
+	TH1F * hToyTriggerV3RP = 0;
+	TH1F * hToyTriggerV4RP = 0;
+
+	TH1F * hInclusiveTriggerV2EP = 0;
+	TH1F * hInclusiveTriggerV3EP = 0;
+	TH1F * hInclusiveTriggerV4EP = 0;
+	TH1F * hInclusiveTriggerV2RP = 0;
+	TH1F * hInclusiveTriggerV3RP = 0;
+	TH1F * hInclusiveTriggerV4RP = 0;
+
+
+
+
+	TH2F * ToyVsEP2 = 0;
+	ToyVsEP2 = (TH2F *) fIn->Get("ToyVsEP2");
+	if (ToyVsEP2 != 0) {
+		printf("Starting the particles vs EP analysis\n");
+		TH2F * ToyVsEP3 = (TH2F *) fIn->Get("ToyVsEP3");
+		TH2F * ToyVsEP4 = (TH2F *) fIn->Get("ToyVsEP4");
+		TH2F * ToyVsRP2 = (TH2F *) fIn->Get("ToyVsRP2");
+		TH2F * ToyVsRP3 = (TH2F *) fIn->Get("ToyVsRP3");
+		TH2F * ToyVsRP4 = (TH2F *) fIn->Get("ToyVsRP4");
+
+		TH2F * InclusiveVsEP2 = (TH2F *) fIn->Get("InclusiveVsEP2");
+		TH2F * InclusiveVsEP3 = (TH2F *) fIn->Get("InclusiveVsEP3");
+		TH2F * InclusiveVsEP4 = (TH2F *) fIn->Get("InclusiveVsEP4");
+		TH2F * InclusiveVsRP2 = (TH2F *) fIn->Get("InclusiveVsRP2");
+		TH2F * InclusiveVsRP3 = (TH2F *) fIn->Get("InclusiveVsRP3");
+		TH2F * InclusiveVsRP4 = (TH2F *) fIn->Get("InclusiveVsRP4");
+
+		TH2F * ToyTriggerVsEP2 = (TH2F *) fIn->Get("ToyTriggerVsEP2");
+		TH2F * ToyTriggerVsEP3 = (TH2F *) fIn->Get("ToyTriggerVsEP3");
+		TH2F * ToyTriggerVsEP4 = (TH2F *) fIn->Get("ToyTriggerVsEP4");
+		TH2F * ToyTriggerVsRP2 = (TH2F *) fIn->Get("ToyTriggerVsRP2");
+		TH2F * ToyTriggerVsRP3 = (TH2F *) fIn->Get("ToyTriggerVsRP3");
+		TH2F * ToyTriggerVsRP4 = (TH2F *) fIn->Get("ToyTriggerVsRP4");
+
+		TH2F * InclusiveTriggerVsEP2 = (TH2F *) fIn->Get("InclusiveTriggerVsEP2");
+		TH2F * InclusiveTriggerVsEP3 = (TH2F *) fIn->Get("InclusiveTriggerVsEP3");
+		TH2F * InclusiveTriggerVsEP4 = (TH2F *) fIn->Get("InclusiveTriggerVsEP4");
+		TH2F * InclusiveTriggerVsRP2 = (TH2F *) fIn->Get("InclusiveTriggerVsRP2");
+		TH2F * InclusiveTriggerVsRP3 = (TH2F *) fIn->Get("InclusiveTriggerVsRP3");
+		TH2F * InclusiveTriggerVsRP4 = (TH2F *) fIn->Get("InclusiveTriggerVsRP4");
+
+
+		// Next: build Vn TGraphErrors from fitting the above. Use a general method.
+//		TGraphErrors * gToyV2EP = CalculateVnGraph(ToyVsEP2,2,"ToyV2EP");
+		//TObjArray hArrToyV2EP = CalculateVnHistogram(ToyVsEP2,2,"ToyV2EP");
+		hToyV2EP = CalculateVnHistogram(ToyVsEP2,2,"ToyV2EPHist");
+		printf("Debug hToyV2EP has name %s\n",hToyV2EP->GetName());
+		hToyV2EP->Draw();
+		gPad->Print("TestToyV2EP.pdf");
+		fOut->Add(hToyV2EP);
+
+		hToyV3EP = CalculateVnHistogram(ToyVsEP3,3,"ToyV3EPHist");
+		hToyV3EP->Draw();
+		gPad->Print("TestToyV3EP.pdf");
+		fOut->Add(hToyV3EP);
+		hToyV4EP = CalculateVnHistogram(ToyVsEP4,4,"ToyV4EPHist");
+		fOut->Add(hToyV4EP);
+
+		hToyV2RP = CalculateVnHistogram(ToyVsRP2,2,"ToyV2RPHist");
+		fOut->Add(hToyV2RP);
+		hToyV3RP = CalculateVnHistogram(ToyVsRP3,3,"ToyV3RPHist");
+		fOut->Add(hToyV3RP);
+		hToyV4RP = CalculateVnHistogram(ToyVsRP4,4,"ToyV4RPHist");
+		fOut->Add(hToyV4RP);
+
+		hInclusiveV2EP = CalculateVnHistogram(InclusiveVsEP2,2,"InclusiveV2EPHist");
+		fOut->Add(hInclusiveV2EP);
+		gInclusiveV2IntegralEP = CalculateVnHistogramIntegral(InclusiveVsEP2,2,"InclusiveV2EPIntegralHist");
+		fOut->Add(gInclusiveV2IntegralEP);
+		hInclusiveV2EP->Draw();
+		gInclusiveV2IntegralEP->SetLineColor(kViolet);
+		gInclusiveV2IntegralEP->Draw("SAME");
+		gPad->Print("TestEPInclusiveFitVsIntegralV2EP.pdf");
+		hInclusiveV3EP = CalculateVnHistogram(InclusiveVsEP3,3,"InclusiveV3EPHist");
+		fOut->Add(hInclusiveV3EP);
+		hInclusiveV4EP = CalculateVnHistogram(InclusiveVsEP4,4,"InclusiveV4EPHist");
+		fOut->Add(hInclusiveV4EP);
+
+		hInclusiveV2RP = CalculateVnHistogram(InclusiveVsRP2,2,"InclusiveV2RPHist");
+		fOut->Add(hInclusiveV2RP);
+		hInclusiveV3RP = CalculateVnHistogram(InclusiveVsRP3,3,"InclusiveV3RPHist");
+		fOut->Add(hInclusiveV3RP);
+		hInclusiveV4RP = CalculateVnHistogram(InclusiveVsRP4,4,"InclusiveV4RPHist");
+		fOut->Add(hInclusiveV4RP);
+
+
+		hToyTriggerV2EP = CalculateVnHistogram(ToyTriggerVsEP2,2,"ToyTriggerV2EPHist");
+		fOut->Add(hToyTriggerV2EP);
+		hToyTriggerV3EP = CalculateVnHistogram(ToyTriggerVsEP3,3,"ToyTriggerV3EPHist");
+		fOut->Add(hToyTriggerV3EP);
+		hToyTriggerV4EP = CalculateVnHistogram(ToyTriggerVsEP4,4,"ToyTriggerV4EPHist");
+		fOut->Add(hToyTriggerV4EP);
+
+		hToyTriggerV2RP = CalculateVnHistogram(ToyTriggerVsRP2,2,"ToyTriggerV2RPHist");
+		fOut->Add(hToyTriggerV2RP);
+		hToyTriggerV3RP = CalculateVnHistogram(ToyTriggerVsRP3,3,"ToyTriggerV3RPHist");
+		fOut->Add(hToyTriggerV3RP);
+		hToyTriggerV4RP = CalculateVnHistogram(ToyTriggerVsRP4,4,"ToyTriggerV4RPHist");
+		fOut->Add(hToyTriggerV4RP);
+
+
+		hInclusiveTriggerV2EP = CalculateVnHistogram(InclusiveTriggerVsEP2,2,"InclusiveTriggerV2EPHist");
+		fOut->Add(hInclusiveTriggerV2EP);
+		hInclusiveTriggerV3EP = CalculateVnHistogram(InclusiveTriggerVsEP3,3,"InclusiveTriggerV3EPHist");
+		fOut->Add(hInclusiveTriggerV3EP);
+		hInclusiveTriggerV4EP = CalculateVnHistogram(InclusiveTriggerVsEP4,4,"InclusiveTriggerV4EPHist");
+		fOut->Add(hInclusiveTriggerV4EP);
+
+		hInclusiveTriggerV2RP = CalculateVnHistogram(InclusiveTriggerVsRP2,2,"InclusiveTriggerV2RPHist");
+		fOut->Add(hInclusiveTriggerV2RP);
+		hInclusiveTriggerV3RP = CalculateVnHistogram(InclusiveTriggerVsRP3,3,"InclusiveTriggerV3RPHist");
+		fOut->Add(hInclusiveTriggerV3RP);
+		hInclusiveTriggerV4RP = CalculateVnHistogram(InclusiveTriggerVsRP4,4,"InclusiveTriggerV4RPHist");
+		fOut->Add(hInclusiveTriggerV4RP);
+
+
+		// Could also add a calculateVn using convolution.
+
+
+	}
+
+	// Event Plane Angle histograms
+	TH1F * EPsiInclEP2 = 0;
+	EPsiInclEP2 = (TH1F *) fIn->Get("EPsiInclEP2");
+	TH1F * EPsiInclEP3 = 0;
+	TH1F * EPsiInclEP4 = 0;
+	TH1F * EPsiToyOnlyEP2 = 0;
+	TH1F * EPsiToyOnlyEP3 =	0;
+	TH1F * EPsiToyOnlyEP4 = 0;
+
+	TH1F * EP2CosDeltaPsiIncl = 0;
+	TH1F * EP2CosDeltaPsiToyOnly = 0;
+	TH1F * EP3CosDeltaPsiIncl = 0;
+	TH1F * EP3CosDeltaPsiToyOnly = 0;
+	TH1F * EP4CosDeltaPsiIncl = 0;
+	TH1F * EP4CosDeltaPsiToyOnly = 0;
+	if (EPsiInclEP2 != 0) {
+		EPsiInclEP3 = (TH1F *) fIn->Get("EPsiInclEP3");
+		EPsiInclEP4 = (TH1F *) fIn->Get("EPsiInclEP4");
+		
+		EPsiToyOnlyEP2 = (TH1F *) fIn->Get("EPsiToyOnlyEP2");
+		EPsiToyOnlyEP3 = (TH1F *) fIn->Get("EPsiToyOnlyEP3");
+		EPsiToyOnlyEP4 = (TH1F *) fIn->Get("EPsiToyOnlyEP4");
+
+		EP2CosDeltaPsiIncl = (TH1F *) fIn->Get("EP2CosDeltaPsiIncl");
+		EP2CosDeltaPsiToyOnly = (TH1F *) fIn->Get("EP2CosDeltaPsiToyOnly");
+		EP3CosDeltaPsiIncl = (TH1F *) fIn->Get("EP3CosDeltaPsiIncl");
+		EP3CosDeltaPsiToyOnly = (TH1F *) fIn->Get("EP3CosDeltaPsiToyOnly");
+		EP4CosDeltaPsiIncl = (TH1F *) fIn->Get("EP4CosDeltaPsiIncl");
+		EP4CosDeltaPsiToyOnly = (TH1F *) fIn->Get("EP4CosDeltaPsiToyOnly");
+
+		fOut->Add(EPsiInclEP2);
+		fOut->Add(EPsiInclEP3);
+		fOut->Add(EPsiInclEP4);
+
+		fOut->Add(EPsiToyOnlyEP2);
+		fOut->Add(EPsiToyOnlyEP3);
+		fOut->Add(EPsiToyOnlyEP4);
+
+		fOut->Add(EP2CosDeltaPsiIncl);
+		fOut->Add(EP2CosDeltaPsiToyOnly);
+		fOut->Add(EP3CosDeltaPsiIncl);
+		fOut->Add(EP3CosDeltaPsiToyOnly);
+		fOut->Add(EP4CosDeltaPsiIncl);
+		fOut->Add(EP4CosDeltaPsiToyOnly);
+
+	}
+
+
+
+
+
+
 
 
   if (leadingJetEtaPhi) {
@@ -2409,7 +2862,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
          // jetHSCdEtaProjection[k][i][j] = jetHadronScatCentEP[k][i][j]->ProjectionX(combinedNames.Data(),dPhi_Bkg_min_bin,dPhi_Bkg_max_bin,"e");
           jetHSCdEtaProjection[k][i][j] = (TH1F *) jetHadronScatCentEP[k][i][j]->ProjectionX(combinedNames.Data());
           jetHSCdEtaProjection[k][i][j]->GetXaxis()->SetTitle("#Delta#eta");
-          jetHSCdEtaProjection[k][i][j]->GetYaxis()->SetTitle("1/N_{jet} dN/d#eta");
+          jetHSCdEtaProjection[k][i][j]->GetYaxis()->SetTitle(Form("1/N_{%s} dN/d#eta",sTriggerTitle.Data()));
           jetHSCdEtaProjection[k][i][j]->SetTitle(combinedNames.Data());
           // averaging over number of bins in phi.
  //         jetHSCdEtaProjection[k][i][j]->Scale(1./(1+dPhi_Bkg_max_bin - dPhi_Bkg_min_bin));
@@ -2495,8 +2948,9 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			//jetHNearSideDEtaProjection
 			//jetHAwaySideDEtaProjection
 
-				combinedNames = jetHadronEP[k][i][j]->GetName();
-				combinedNames += "_NSdEtaProjection";
+				//combinedNames = jetHadronEP[k][i][j]->GetName();
+				//combinedNames += "_NSdEtaProjection";
+				combinedNames = Form("Proj_PtBin%d_EP%d_NearSideDEta_ObsBin%d",i+1,k-1,j);
 				jetHNearSideDEtaProjection[k][i][j] = jetHadronEP[k][i][j]->ProjectionX(combinedNames.Data(),dPhi_Bkg_min_bin,dPhi_Bkg_max_bin,"e");
 
 				jetHNearSideDEtaProjection[k][i][j]->GetXaxis()->SetTitle("#Delta#eta");
@@ -2896,10 +3350,10 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				jetHProjection[k][i][j]->SetStats(kFALSE);
 				jetHProjection[k][i][j]->GetXaxis()->SetTitle("#Delta#phi");
 //				jetHProjection[k][i][j]->GetYaxis()->SetTitle("1/N_{jet} dN/d#Delta#phi");
-				jetHProjection[k][i][j]->GetYaxis()->SetTitle("1/N_{jet} d^{2}N/d#Delta#phid#Delta#eta"); // FIXME
-				jetHProjection[k][i][j]->SetTitle(Form("%s-h, %.0f #leq p^{%s}_{T} < %.0f, %.2f #leq %s < %.2f, EP Bin %d",sTriggerTitle.Data(),fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1),assocParticlePtBins.at(j),sAssocPtTitle.Data(),assocParticlePtBins.at(j+1),k));
+				jetHProjection[k][i][j]->GetYaxis()->SetTitle(Form("1/N_{%s} d^{2}N/d#Delta#phid#Delta#eta",sTriggerTitle.Data())); // FIXME
+				jetHProjection[k][i][j]->SetTitle(Form("%s-h, %.0f #leq p^{%s}_{T} < %.0f, %.2f #leq %s < %.2f GeV/#it{c}, EP Bin %d",sTriggerTitle.Data(),fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1),assocParticlePtBins.at(j),sAssocPtTitle.Data(),assocParticlePtBins.at(j+1),k));
 
-				int rebinProj = 2;
+				int rebinProj = 4; //2
 				jetHProjection[k][i][j]->Rebin(rebinProj);
 				jetHProjection[k][i][j]->Scale(1./rebinProj);
 
@@ -3522,7 +3976,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			max_y = max(max_y,TMath::MaxElement(ptBinASWidthsGraphs[i]->GetN(),ptBinASWidthsGraphs[i]->GetY()));
 			if (i == 1) style = "SAME LP";
 			ptBinASWidthsGraphs[i]->Draw(style);		
-			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
+			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
 			legAS->AddEntry(ptBinASWidthsGraphs[i],combinedClass, "lp");
 		}
 		ptBinASWidthsGraphs[0]->GetYaxis()->SetRangeUser(min_y,max_y);
@@ -3544,7 +3998,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			max_y = max(max_y,TMath::MaxElement(ptBinASRmsGraphs[i]->GetN(),ptBinASRmsGraphs[i]->GetY()));
 			if (i == 1) style = "SAME LP";
 			ptBinASRmsGraphs[i]->Draw(style);		
-			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
+			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
 			legAS->AddEntry(ptBinASRmsGraphs[i],combinedClass, "lp");
 		}
 		ptBinASRmsGraphs[0]->GetYaxis()->SetRangeUser(min_y,max_y);
@@ -3605,7 +4059,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			max_y = max(max_y,TMath::MaxElement(ptBinASIntegralsGraphs[i]->GetN(),ptBinASIntegralsGraphs[i]->GetY()));
 			if (i == 1) style = "SAME LP";
 			ptBinASIntegralsGraphs[i]->Draw(style);		
-			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
+			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
 			legAS->AddEntry(ptBinASIntegralsGraphs[i],combinedClass, "lp");
 		}
 		ptBinASIntegralsGraphs[0]->GetYaxis()->SetRangeUser(min_y,max_y);
@@ -3630,7 +4084,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			max_y = max(max_y,TMath::MaxElement(ptBinASFwhmGraphs[i]->GetN(),ptBinASFwhmGraphs[i]->GetY()));
 			if (i == 1) style = "SAME LP";
 			ptBinASFwhmGraphs[i]->Draw(style);		
-			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
+			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
 			legAS->AddEntry(ptBinASFwhmGraphs[i],combinedClass, "lp");
 		}
 		ptBinASFwhmGraphs[0]->GetYaxis()->SetRangeUser(min_y,max_y);
@@ -3653,7 +4107,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			max_y = max(max_y,TMath::MaxElement(ptBinASYieldsGraphs[i]->GetN(),ptBinASYieldsGraphs[i]->GetY()));
 			if (i == 1) style = "SAME LP";
 			ptBinASYieldsGraphs[i]->Draw(style);		
-			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
+			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
 			legAS->AddEntry(ptBinASYieldsGraphs[i],combinedClass, "lp");
 		}
 		ptBinASYieldsGraphs[0]->GetYaxis()->SetRangeUser(min_y,max_y);
@@ -3677,7 +4131,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			max_y = max(max_y,TMath::MaxElement(ptBinASBetasGraphs[i]->GetN(),ptBinASBetasGraphs[i]->GetY()));
 			if (i == 1) style = "SAME LP";
 			ptBinASBetasGraphs[i]->Draw(style);		
-			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
+			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
 			legAS->AddEntry(ptBinASBetasGraphs[i],combinedClass, "lp");
 		}
 		ptBinASBetasGraphs[0]->GetYaxis()->SetRangeUser(min_y,max_y);
@@ -3700,7 +4154,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			max_y = max(max_y,TMath::MaxElement(ptBinBsGraphs[i]->GetN(),ptBinBsGraphs[i]->GetY()));
 			if (i == 1) style = "SAME LP";
 			ptBinBsGraphs[i]->Draw(style);		
-			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
+			combinedClass = Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
 			legAS->AddEntry(ptBinBsGraphs[i],combinedClass, "lp");
 		}
 		min_y = 1e-4;
@@ -3762,7 +4216,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
       partonPtByJetBin[i] = (TH1F *) qqbar_PartonPtByJetBin[i]->Clone();
       partonPtByJetBin[i]->SetName(Form("partonPtByJetBin_%.0f_%.0f",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
       partonPtByJetBin[i]->SetTitle(Form("Parton p_{T} for %.0f #leq p_{T}^{jet} < %.0f (GeV/c)",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
-      partonPtByJetBin[i]->GetYaxis()->SetTitle("1/N_{jet} dN/dp_{T}");
+      partonPtByJetBin[i]->GetYaxis()->SetTitle(Form("1/N_{%s} dN/dp_{T}",sTriggerTitle.Data()));
       partonPtByJetBin[i]->SetLineColor(kBlue);
       partonPtByJetBin[i]->Add(qq_PartonPtByJetBin[i]);
       partonPtByJetBin[i]->Add(gq_PartonPtByJetBin[i]);
@@ -3896,12 +4350,13 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			}
 			canvas->SetLogy(1);
 			mg->Draw(style);
-			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
+			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
 			mg->GetXaxis()->SetTitle(ptBinASIntegralsGraphsEP[0][i]->GetXaxis()->GetTitle());
 			mg->GetYaxis()->SetTitle(ptBinASIntegralsGraphsEP[0][i]->GetYaxis()->GetTitle());
 	//		ptBinASIntegralsGraphs[0]->GetYaxis()->SetRangeUser(min_y,max_y);
 			legAS->Draw("SAME");
 			canvas->Print(Form("EP_AS_Integrals_JetPt_%0.f_%0.f.pdf",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
+			canvas->Print(Form("EP_AS_Integrals_JetPt_%0.f_%0.f.png",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Print(Form("EP_AS_Integrals_JetPt_%0.f_%0.f.C",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Clear();
 			legAS->Clear();
@@ -3919,13 +4374,14 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				legAS->AddEntry(ptBinASYieldsGraphsEP[k][i],titleList[k], "lp");
 			}
 			mg->Draw(style);
-			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
+			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
 			mg->GetXaxis()->SetTitle(ptBinASYieldsGraphsEP[0][i]->GetXaxis()->GetTitle());
 			mg->GetYaxis()->SetTitle(ptBinASYieldsGraphsEP[0][i]->GetYaxis()->GetTitle());
 	//		ptBinASIntegralsGraphs[0]->GetYaxis()->SetRangeUser(min_y,max_y);
 			//  canvas->SetLogy(1);
 			legAS->Draw("SAME");
 			canvas->Print(Form("EP_AS_Yields_" + jetClass + ".pdf",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
+			canvas->Print(Form("EP_AS_Yields_" + jetClass + ".png",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Print(Form("EP_AS_Yields_" + jetClass + ".C",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Clear();
 			legAS->Clear();
@@ -3944,11 +4400,12 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				legAS->AddEntry(ptBinASRmsGraphsEP[k][i],titleList[k], "lp");
 			}
 			mg->Draw(style);
-			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
+			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
 			mg->GetXaxis()->SetTitle(ptBinASRmsGraphsEP[0][i]->GetXaxis()->GetTitle());
 			mg->GetYaxis()->SetTitle(ptBinASRmsGraphsEP[0][i]->GetYaxis()->GetTitle());
 			legAS->Draw("SAME");
 			canvas->Print(Form("EP_AS_Rms_JetPt_%0.f_%0.f.pdf",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
+			canvas->Print(Form("EP_AS_Rms_JetPt_%0.f_%0.f.png",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Print(Form("EP_AS_Rms_JetPt_%0.f_%0.f.C",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Clear();
 			legAS->Clear();
@@ -3971,12 +4428,13 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				legAS->AddEntry(ptBinNSEtaCentralWidthsGraphsEP[k][i],titleList[k],"lp");
 			}
 			mg->Draw(style);
-			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
+			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
 			mg->GetXaxis()->SetTitle(ptBinNSEtaCentralWidthsGraphsEP[0][i]->GetXaxis()->GetTitle());
 			mg->GetYaxis()->SetTitle(ptBinNSEtaCentralWidthsGraphsEP[0][i]->GetYaxis()->GetTitle());
 	//		ptBinASIntegralsGraphs[0]->GetYaxis()->SetRangeUser(min_y,max_y);
 			legAS->Draw("SAME");
 			canvas->Print(Form("EP_NS_EtaCentralWidths_JetPt_%0.f_%0.f.pdf",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
+			canvas->Print(Form("EP_NS_EtaCentralWidths_JetPt_%0.f_%0.f.png",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Print(Form("EP_NS_EtaCentralWidths_JetPt_%0.f_%0.f.C",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Clear();
 			legAS->Clear();
@@ -3996,12 +4454,13 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			}
 			canvas->SetLogy(1);
 			mg->Draw(style);
-			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
+			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
 			mg->GetXaxis()->SetTitle(ptBinNSIntegralsGraphsEP[0][i]->GetXaxis()->GetTitle());
 			mg->GetYaxis()->SetTitle(ptBinNSIntegralsGraphsEP[0][i]->GetYaxis()->GetTitle());
 	//		ptBinASIntegralsGraphs[0]->GetYaxis()->SetRangeUser(min_y,max_y);
 			legAS->Draw("SAME");
 			canvas->Print(Form("EP_NS_Integrals_JetPt_%0.f_%0.f.pdf",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
+			canvas->Print(Form("EP_NS_Integrals_JetPt_%0.f_%0.f.png",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Print(Form("EP_NS_Integrals_JetPt_%0.f_%0.f.C",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Clear();
 			legAS->Clear();
@@ -4020,11 +4479,12 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				legAS->AddEntry(ptBinNSRmsGraphsEP[k][i],titleList[k], "lp");
 			}
 			mg->Draw(style);
-			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
+			mg->SetTitle(Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/#it{c}",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1)));
 			mg->GetXaxis()->SetTitle(ptBinNSRmsGraphsEP[0][i]->GetXaxis()->GetTitle());
 			mg->GetYaxis()->SetTitle(ptBinNSRmsGraphsEP[0][i]->GetYaxis()->GetTitle());
 			legAS->Draw("SAME");
 			canvas->Print(Form("EP_NS_Rms_JetPt_%0.f_%0.f.pdf",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
+			canvas->Print(Form("EP_NS_Rms_JetPt_%0.f_%0.f.png",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Print(Form("EP_NS_Rms_JetPt_%0.f_%0.f.C",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
 			canvas->Clear();
 			legAS->Clear();
@@ -4097,8 +4557,8 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 	float RatioMin = 0.5;
 	float RatioMax = 1.5;
 
-	float DiffMin = -0.8;
-	float DiffMax = 1.45;
+	float DiffMin = -0.3;
+	float DiffMax = 0.3;
 
 		//Away Side
 		// Yields
@@ -4707,6 +5167,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			lGraph->Draw("P 3 SAME");
 			lGraph->GetYaxis()->SetRangeUser(RatioMin,RatioMax);
 			canvas->Print(Form("EP_%s.pdf",lGraph->GetName()));
+			canvas->Print(Form("EP_%s.png",lGraph->GetName()));
 			canvas->Print(Form("EP_%s.C",lGraph->GetName()));
 		}
 	}
@@ -4720,6 +5181,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			lGraph->Draw("P 3 SAME");
 			lGraph->GetYaxis()->SetRangeUser(DiffMin,DiffMax);
 			canvas->Print(Form("EP_%s.pdf",lGraph->GetName()));
+			canvas->Print(Form("EP_%s.png",lGraph->GetName()));
 			canvas->Print(Form("EP_%s.C",lGraph->GetName()));
 		}
 	}
@@ -4762,7 +5224,7 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 	int n_y_SubDiv = TMath::FloorNint(TMath::Sqrt(nAssocParticleBins));
 //	int n_x_SubDiv = TMath::CeilNint(TMath::Sqrt(nAssocParticleBins));
 	int n_x_SubDiv = TMath::CeilNint(nAssocParticleBins*1.0/n_y_SubDiv);
-	TLegend * legASPlotCmp = new TLegend(0.67,0.65,0.9,0.85);
+	TLegend * legASPlotCmp = new TLegend(0.67,0.65,0.95,0.90);
 	for (unsigned int i = 0; i < nTriggerPtBins; i++)
 	{
 	//	canvas->Clear();
@@ -4774,6 +5236,14 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 	//		index++;
 	//		canvas->cd(index);
 			canvas->Clear();
+			legASPlotCmp->Clear();
+
+			TString sLocalTitle = Form("%0.f #leq p_{T}^{%s} #leq %0.f GeV/c",fTriggerPtBins.at(i),sTriggerTitle.Data(),fTriggerPtBins.at(i+1));
+			TString sLocalTitle2 = Form("%0.1f #leq p_{T}^{assoc} #leq %0.1f GeV/c",assocParticlePtBins.at(j),assocParticlePtBins.at(j+1));
+			//legASPlotCmp->SetHeader(sLocalTitle.Data());
+			legASPlotCmp->AddEntry((TObject *)0, sLocalTitle,"");
+			legASPlotCmp->AddEntry((TObject *)0, sLocalTitle2,"");
+
 
 			for (int k = 0; k < nEPBins; k++) {
 				jetHProjection[k][i][j]->GetXaxis()->SetRangeUser(PI/2.,3.*PI/2);
@@ -4783,16 +5253,18 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				jetHProjection[k][i][j]->SetMarkerStyle(markerList[k]);
 				if (k==0) {
 					jetHProjection[k][i][j]->Draw();
+					jetHProjection[k][i][j]->GetXaxis()->SetTitleOffset(fXAxisTitleOffset);
 				} else {
 					jetHProjection[k][i][j]->Draw("SAME");
 				}
-				if (i==0 && j==0) {
+				//if (i==0 && j==0) {
 					legASPlotCmp->AddEntry(jetHProjection[k][i][j],titleList[k],"lp");
-				}
+				//}
 			}
 			legASPlotCmp->Draw("SAME");
-			canvas->Print(Form("EP_AS_PlotCmp_" + jetClass + "_" + particleClass + ".pdf",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1),assocParticlePtBins.at(j),assocParticlePtBins.at(j+1)));
-			canvas->Print(Form("EP_AS_PlotCmp_" + jetClass + "_" + particleClass + ".C",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1),assocParticlePtBins.at(j),assocParticlePtBins.at(j+1)));
+			canvas->Print(Form("EP_AS_PlotCmp_" + jetClass + "_" + particleClass + ".pdf",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1),fParticleLabelScale*assocParticlePtBins.at(j),fParticleLabelScale*assocParticlePtBins.at(j+1)));
+			canvas->Print(Form("EP_AS_PlotCmp_" + jetClass + "_" + particleClass + ".png",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1),fParticleLabelScale*assocParticlePtBins.at(j),fParticleLabelScale*assocParticlePtBins.at(j+1)));
+			canvas->Print(Form("EP_AS_PlotCmp_" + jetClass + "_" + particleClass + ".C",fTriggerPtBins.at(i),fTriggerPtBins.at(i+1),fParticleLabelScale*assocParticlePtBins.at(j),fParticleLabelScale*assocParticlePtBins.at(j+1)));
 		}
 	}
 
@@ -4880,6 +5352,203 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 			}
 		}
 	}
+
+
+
+
+		// Drawing things for NScatCent.
+		// X-axis is pt
+		// Y-axis is NScat
+//leadingJetPtNScatCent[iEPBin] ?
+		printf("Creating the scattering center histograms and plots\n");
+
+		TLegend * legendScatCent = new TLegend(0.45,0.35,0.9,0.9);
+
+		vector<TGraphErrors *> fScatCentMeanEPBins = {};
+		vector<TGraphErrors *> fScatCentRMSEPBins = {};
+		for (int k = 0; k < nEPBins; k++) {
+			TGraphErrors * fGraph = new TGraphErrors(nTriggerPtBins);
+			fGraph->SetName(Form("leadingJetScatCent_Mean_EP%d",k));
+			fGraph->GetXaxis()->SetTitle("p_{T} (GeV/#it{c})");
+			fGraph->SetTitle("Mean Number of Scattering Centers;p_{T} (GeV/#it{c});<N_{Scat.}>");
+			fScatCentMeanEPBins.push_back(fGraph);
+
+			TGraphErrors * fGraphRMS = new TGraphErrors(nTriggerPtBins);
+			fGraphRMS->SetName(Form("leadingJetScatCent_RMS_EP%d",k));
+			fGraphRMS->GetXaxis()->SetTitle("p_{T} (GeV/#it{c})");
+			fGraphRMS->SetTitle("RMS of Number of Scattering Centers Distribution;p_{T} (GeV/#it{c})");
+			fScatCentRMSEPBins.push_back(fGraphRMS);
+		}
+
+		TGraphErrors * fScatCentOutOverIn = new TGraphErrors(nTriggerPtBins);
+		fScatCentOutOverIn->Draw();
+		fScatCentOutOverIn->GetXaxis()->SetTitle("p_{T} (GeV/#it{c})");
+		fScatCentOutOverIn->GetYaxis()->SetTitle("<N_{Out}> / <N_{In}>");
+		fScatCentOutOverIn->SetName("leadingJetScatCentOutOverIn");
+		fScatCentOutOverIn->SetTitle("OutOverIn;p_{T} (GeV/#it{c});<N_{Out}> / <N_{In}>");
+
+		TGraphErrors * fScatCentMidOverIn = new TGraphErrors(nTriggerPtBins);
+		fScatCentMidOverIn->SetName("leadingJetScatCentMidOverIn");
+
+		fScatCentMidOverIn->SetTitle("MidOverIn;p_{T} (GeV/#it{c});<N_{Mid}> / <N_{In}>");
+
+		//fScatCentMidOverIn->GetXaxis()->SetTitle("p_{T} (GeV/#it{c})");
+		//fScatCentMidOverIn->GetYaxis()->SetTitle("<N_{Mid}> / <N_{In}>");
+
+		vector<vector<TH1D *>> leadingPtNScatCentPtArray = {};
+		for (int i = 0; i < nTriggerPtBins; i++) {
+			printf("Starting running the scattering center part for bin %d\n",i);
+//			canvas->Clear();
+//			leadingJetPtNScatCent[0]->Draw("COLZ");
+	//		canvas->Print(Form("leadingJetPtNScatCent_PtBin%d_EP0.pdf",i));
+//			canvas->Print(Form("leadingJetPtNScatCent_PtBin%d_EP0.C",i));
+
+
+			if (!leadingJetPtNScatCent[0]) {
+				printf("Missing leadingJetPtNScatCent. Skipping Scat Cent step\n");
+				continue;
+			}
+
+			canvas->Clear();
+			legendScatCent->Clear();
+			vector<TH1D *> leadingPtNScatCentEPArray = {};
+
+			double ymax = -1;
+				printf("Test0\n");
+
+			for (int k = 0; k < nEPBins; k++) {
+
+
+				TString sName = Form("leadingJetPtNScatCent_PtBin%d_EPBin%d",i+1,k);
+				TH1D * leadingPtNScatCent = (TH1D *) leadingJetPtNScatCent[k]->ProjectionY(sName.Data(),i+1,i+1,"e");
+
+				//if (k==0) leadingPtNScatCent->Scale(1./nEPBins);
+
+				double integral = leadingPtNScatCent->Integral();
+				if (integral > 0) leadingPtNScatCent->Scale(1./integral);
+
+				printf("Test1\n");
+
+				ymax = TMath::Max(ymax,leadingPtNScatCent->GetBinContent(leadingPtNScatCent->GetMaximumBin()));
+
+				double mean = leadingPtNScatCent->GetMean();
+				double mean_error = leadingPtNScatCent->GetMeanError();
+				double rms = leadingPtNScatCent->GetRMS();
+				double rms_error = leadingPtNScatCent->GetRMSError();
+
+				// FIXME add the actual pt
+
+				double ptMean = 0.5 * (fTriggerPtBins.at(i+1) + fTriggerPtBins.at(i));
+				double ptWidth = 0.5 * (fTriggerPtBins.at(i+1) - fTriggerPtBins.at(i));
+				fScatCentMeanEPBins[k]->SetPoint(i,ptMean,mean);
+				fScatCentMeanEPBins[k]->SetPointError(i,ptWidth,mean_error);
+
+				fScatCentRMSEPBins[k]->SetPoint(i,ptMean,rms);
+				fScatCentRMSEPBins[k]->SetPointError(i,0,rms_error);
+
+
+
+				if (k == 2) { // Mid-Plane
+					double InPlane = fScatCentMeanEPBins[1]->GetY()[i];
+					double InPlaneErr = fScatCentMeanEPBins[1]->GetEY()[i];
+					double MidPlane = fScatCentMeanEPBins[k]->GetY()[i];
+					double MidPlaneErr = fScatCentMeanEPBins[k]->GetEY()[i];
+
+					if (InPlane > 0) {
+						double MidOverInRatio = MidPlane / InPlane;
+						double MidOverInRatioErr = MidOverInRatio * TMath::Sqrt(TMath::Power(InPlaneErr/InPlane,2) + TMath::Power(MidPlaneErr/MidPlane,2));
+
+						fScatCentMidOverIn->SetPoint(i,ptMean,MidOverInRatio);
+						fScatCentMidOverIn->SetPointError(i,ptWidth,MidOverInRatioErr);
+					}
+
+				} else if (k == 3) { // Out-of-Plane
+					double InPlane = fScatCentMeanEPBins[1]->GetY()[i];
+					double InPlaneErr = fScatCentMeanEPBins[1]->GetEY()[i];
+					double OutPlane = fScatCentMeanEPBins[k]->GetY()[i];
+					double OutPlaneErr = fScatCentMeanEPBins[k]->GetEY()[i];
+					if (InPlane > 0) {
+						double OutOverInRatio = OutPlane / InPlane;
+						double OutOverInRatioErr = OutOverInRatio * TMath::Sqrt(TMath::Power(InPlaneErr/InPlane,2) + TMath::Power(OutPlaneErr/OutPlane,2));
+
+						fScatCentOutOverIn->SetPoint(i,ptMean,OutOverInRatio);
+						fScatCentOutOverIn->SetPointError(i,ptWidth,OutOverInRatioErr);
+					}
+				}
+
+
+
+				legendScatCent->AddEntry(leadingPtNScatCent,Form("%s",titleList[k].Data()),"lp");
+				legendScatCent->AddEntry((TObject*)0,Form("<n> = %.1f",mean),"");
+				legendScatCent->AddEntry((TObject*)0,Form("RMS = %.1f",rms),"");
+				gPad->SetRightMargin(0.04);
+
+	TGaxis::SetMaxDigits(3);
+
+				leadingPtNScatCent->GetXaxis()->SetRangeUser(0,300);
+				leadingPtNScatCent->GetXaxis()->SetTitleOffset(fXAxisTitleOffset);
+				leadingPtNScatCent->SetTitle(Form("%s (%.1f #leq p_{T} < %.1f (GeV/#it{c})",leadingPtNScatCent->GetTitle(),fTriggerPtBins.at(i),fTriggerPtBins.at(i+1)));
+
+
+				leadingPtNScatCent->SetLineColor(colorList[k]);
+				leadingPtNScatCent->SetMarkerColor(colorList[k]);
+				leadingPtNScatCent->SetMarkerStyle(markerList[k]);
+
+				if (k) leadingPtNScatCent->Draw("SAME");
+				else leadingPtNScatCent->Draw();
+
+				leadingPtNScatCentEPArray.push_back(leadingPtNScatCent);
+			}
+
+			leadingPtNScatCentEPArray[0]->GetYaxis()->SetRangeUser(0,1.05*ymax);
+
+			legendScatCent->Draw("SAME");
+
+			canvas->Print(Form("leadingJetPtNScatCent_PtBin%d_Cmp.pdf",i+1));
+			canvas->Print(Form("leadingJetPtNScatCent_PtBin%d_Cmp.C",i+1));
+			leadingPtNScatCentPtArray.push_back(leadingPtNScatCentEPArray);
+		}
+		canvas->Clear();
+
+		printf("About to make the comparison plot.\n");
+
+		TMultiGraph * mg = new TMultiGraph();
+		TLegend * legendScatCent2 = new TLegend(0.6,0.15,0.85,0.4);		
+
+		for (int k = 0; k < nEPBins; k++) {
+			fScatCentMeanEPBins[k]->SetLineColor(colorList[k]);
+			fScatCentMeanEPBins[k]->SetMarkerColor(colorList[k]);
+			fScatCentMeanEPBins[k]->SetMarkerStyle(markerList[k]);
+
+			fScatCentRMSEPBins[k]->SetLineColor(colorList[k]);
+			fScatCentRMSEPBins[k]->SetMarkerColor(colorList[k]);
+			fScatCentRMSEPBins[k]->SetMarkerStyle(markerList[k]);
+
+			legendScatCent2->AddEntry(fScatCentMeanEPBins[k],titleList[k].Data(),"lp");
+
+			mg->Add(fScatCentMeanEPBins[k]);
+		}
+
+		mg->Draw("APL");
+		mg->GetXaxis()->SetTitle("p_{T} (GeV/#it{c})");
+		mg->GetYaxis()->SetTitle("<Scattering Centers>");
+		legendScatCent2->Draw("SAME");
+		canvas->Print(Form("LeadingJetPtMeanScatCent.pdf"));
+		canvas->Print(Form("LeadingJetPtMeanScatCent.C"));
+
+
+		// Save to file
+		for (int k = 0; k < nEPBins; k++) {
+			if(fScatCentMeanEPBins[k]) fOut->Add(fScatCentMeanEPBins[k]);
+			if(fScatCentRMSEPBins[k]) fOut->Add(fScatCentRMSEPBins[k]);
+		}
+		if (fScatCentOutOverIn) fOut->Add(fScatCentOutOverIn);
+		if (fScatCentMidOverIn) fOut->Add(fScatCentMidOverIn);
+	
+
+
+
+
 	if (ptLossLeadingJetPtBinEP[0][0]) {
 
 		int loss_rebin = 4;
@@ -4917,6 +5586,10 @@ void phase2(TString inputFilename = "root/pp.hist.root", TString
 				energyLossLeadingPartonPtBinEP[k][i]->SetMarkerStyle(markerList[k]);
 			}
 		}
+
+
+
+
 		TLegend * leg = new TLegend(0.5,0.65,0.90,0.85);
 
 
@@ -5137,7 +5810,7 @@ int main(int argc, char * argv[])
 	}
 
 //  exit(0);
- 
+
   phase2(inputFilename,outputFilename);
 
   #ifdef RE_STYLE
@@ -5207,6 +5880,72 @@ void parseInput(int argc, char * argv[], TString & inputFilename, TString & outp
         printHelp();
       }
     }
+
+		if ((argv[i] == std::string("--trigger")) || (argv[i] == std::string("-t"))) {
+			if (argc > i+1)
+			{
+				// Compare to options jet (0), pi0 (1), gamma (2)
+				if ((argv[i+1] == std::string("jet")) || (argv[i+1] == std::string("j"))) {
+					iForceTriggerType = 0;
+				} else if (argv[i+1] == std::string("pi0")) {
+					iForceTriggerType = 1; // pT. 2 is for zT
+				} else if ((argv[i+1] == std::string("gamma")) || (argv[i+1] == std::string("g"))) {
+					iForceTriggerType = 3;
+				} else if ((argv[i+1] == std::string("HSgamma")) || (argv[i+1] == std::string("HSGamma"))) {
+					iForceTriggerType = 4;
+				} else {
+					std::cout << "Invalid option for the trigger: " << argv[i+1] << std::endl;
+				}
+				i++;
+				continue;
+			}
+			else 
+			{
+				std::cout << "A Trigger setting must be given." << std::endl;
+				printHelp();
+			}
+
+		}
+
+
+    if ((argv[i] == std::string("--dEtaMode")) || (argv[i] == std::string("-e")) )
+    {
+      if (argc > i+1)
+      {
+        char *t;
+        long n = strtol(argv[i+1],&t,10);
+        if (*t) { // entry is not a number
+          int cmp = 1;
+          for (int j = 0; j < NdEtaCutModes; j++) {
+            cmp = strcmp(argv[i+1],dEtaCutModesArray[j]);
+            if (!cmp) {
+              printf("recognized option %s = %d\n",dEtaCutModesArray[j],j);
+              dEtaCutMode = j;
+              break;   
+            } 
+          }
+          if (cmp) {
+            fprintf(stderr,"Error: Unrecognized dEta cut option: %s\n",argv[i+1]);
+            exit(1);
+          }
+        } else { //entry is a number
+          if (0 <= n && n < NdEtaCutModes ) dEtaCutMode = n;
+          else {
+            fprintf(stderr,"Error: invalid choice for dEta option\n");
+            exit(1);
+          }
+        }
+
+				i++;
+				continue;
+			}
+      else
+      {
+        std::cout << "A choice of method must be passed!" << std::endl;
+        printHelp();
+      }
+		}
+
     if ((argv[i] == std::string("--background2D")) || (argv[i] == std::string("-b")) )
     {
       // Sets the combinatorial background method for dPhiDEta
@@ -5422,9 +6161,25 @@ void printHelp(std::string input)
     << std::setw(5) << std::left << "\t-i" << "\t--intputFilename <filename>"
     << "\t-> Sets the input filename. Default: \"root/pp.root\"" << std::endl
     << std::setw(5) << std::left << "\t-o" << "\t--outputFilename <filename>"
-    << "\t-> Sets the output filename. Default: \"root/final.root\"" << std::endl
+    << "\t-> Sets the output filename. Default: \"final.root\"" << std::endl
     << std::setw(5) << std::left << "\t-od" << "\t--outputDirPath <path>"
     << "\t-> Sets the output directory for plots. Default: \"output\"" << std::endl
+
+    << std::setw(5) << std::left << "\t-t" << "\t--trigger <triggerType>"
+    << "\t-> Forces the assumption of which trigger type is being used. If not given, the type will be determined from histogram names." << std::endl
+    << "\t\t Choices: \"jet\"" << std::endl
+    << "\t\t          \"pi0\"" << std::endl
+    << "\t\t          \"gamma\"" << std::endl
+    << "\t\t          \"HSgamma\"" << std::endl
+
+
+    << std::setw(5) << std::left << "\t-e" << "\t--dEtaMode <DeltaEtaMode>"
+		<< "\t-> Sets where the far delta range is defined"
+    << "\t\t Choices: \"Default = 0\" --> " << fDeltaEtaPeakCut << "-" << delta_eta_cut << std::endl
+    << "\t\t          \"3Sigma = 1\" --> Determined by 3sigma_1 of nearside peak in delta eta. (Not coded)." << std::endl
+    << "\t\t          \"FarOut = 2\" --> " << fFarOutDeltaEtaMin << "-" << fFarOutDeltaEtaMax << std::endl
+
+
     << std::setw(5) << std::left << "\t-b" << "\t--background2D <algo>"
     << "\t-> Sets the method for combinatorial bkg subtraction." << std::endl 
     << "\t\t Choices: \"NoBkgSub = 0\" --> Do not subtract from dPhidEta" << std::endl
